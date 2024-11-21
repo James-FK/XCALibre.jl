@@ -29,16 +29,6 @@ schemes = (
     ϕ = set_schemes(divergence = Linear))
 
 
-#finally solve equation 
-config = Configuration(
-    solvers = solvers, schemes = schemes, runtime = runtime, hardware= hardware)
-
-
-
-
-
-
-
 
 solvers = (
     ϕ = set_solver(
