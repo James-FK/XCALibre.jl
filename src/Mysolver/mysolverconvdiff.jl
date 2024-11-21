@@ -9,50 +9,50 @@ mesh_dev = mesh
 
 meshData = XCALibre.VTK.initialise_writer(mesh)
 
-#T = ScalarField(mesh)
 
-#write_vtk("test", mesh, meshData, ("T", T))
-
-#Define my scalar field ϕ
-#= make a new solver for my equation
-div(rho*U*ϕ)=div(Γgrad(\phi)+Source
-
-    =#
-#then solve 
 
 ϕ = ScalarField(mesh)
-#function setup_convection_diffusionsolver(model)
+rhoU = FaceScalarField(mesh)
+Γ= FaceScalarField(mesh)
 
-    @info "Extracting configuration and input fields..."
-    
-    #(; U, p) = model.momentum
-    ϕ = model.momentum
-    mesh = model.domain
-
-    @info "Pre-allocating fields..."
-
-    #∇ϕ = Grad{schemes.ϕ.gradient}(ϕ)
+ϕ_source = ScalarField(mesh)
 
 
-    "∇p = Grad{schemes.p.gradient}(p)
-    mdotf = FaceScalarField(mesh)
-    rDf = FaceScalarField(mesh)
-    nueff = FaceScalarField(mesh)
-    # initialise!(rDf, 1.0)
-    rDf.values .= 1.0
-    divHv = ScalarField(mesh)
-    "
-    ϕ = ScalarField(mesh)
-    rhoU = FaceScalarField(mesh)
-    Γ= FaceScalarField(mesh)
-    ϕ_source = ScalarField(mesh)
+ϕ_eqn = (
+Divergence{Linear}(rhoU, ϕ) 
+- Laplacian{Linear}(Γ, ϕ) 
+== 
+Source(ϕ_source)
+) → ScalarEquation(mesh)
+
+schemes = (
+    ϕ = set_schemes(divergence = Linear))
 
 
-    ϕ_eqn = (
-    Divergence{Linear}(rhoU, ϕ) 
-    - Laplacian{Linear}(Γ, ϕ) 
-    == 
-    Source(ϕ_source)
-    ) → ScalarEquation(mesh)
+#finally solve equation 
+config = Configuration(
+    solvers = solvers, schemes = schemes, runtime = runtime, hardware= hardware)
 
-#end
+
+
+
+
+
+
+
+solvers = (
+    ϕ = set_solver(
+        ϕ;
+        solver = BicgstabSolver,
+        preconditioner = Jacobi(),
+        convergence = 1e-7,
+        relax = 0.7,
+        rtol = 1e-4,
+        atol = 1e10
+    ))
+
+config = Configuration(
+    solvers = solvers, schemes = schemes, runtime = runtime, hardware= hardware
+)
+
+solve_equation!(ϕ_eqn, ϕ, solvers.ϕ, config; ref=pref)
