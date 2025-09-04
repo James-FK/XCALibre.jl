@@ -3,15 +3,7 @@ export copy_to_cpu
 
 initialise_writer(format::VTK, mesh::Mesh2) = VTKWriter2D(nothing, nothing)
 
-function write_results(iteration::TI, time, mesh, meshData::VTKWriter2D, BCs, args...) where TI
-    name = ""
-    if iteration == time
-        name = @sprintf "iteration_%i" iteration
-    else
-        # name = @sprintf "time_%.8f" iteration
-        name = @sprintf "time_%i" iteration
-    end
-    filename = name*".vtk"
+function write_results(filename, mesh, meshData::VTKWriter2D, BCs, args...)
 
     # UxNodes = FVM.NodeScalarField(Ux)
     # UyNodes = FVM.NodeScalarField(Uy)
@@ -39,12 +31,12 @@ function write_results(iteration::TI, time, mesh, meshData::VTKWriter2D, BCs, ar
             (; coords) = node
             println(io, coords[1]," ", coords[2]," ", coords[3])
         end
-        sumIndeces = 0
+        sumindices = 0
         for cell ∈ cells_cpu
-            # sumIndeces += length(cell.nodesID)
-            sumIndeces += length(cell.nodes_range)
+            # sumindices += length(cell.nodesID)
+            sumindices += length(cell.nodes_range)
         end
-        cellListSize = sumIndeces + nCells
+        cellListSize = sumindices + nCells
         write(io, "CELLS $(nCells) $(cellListSize)\n")
         for cell ∈ cells_cpu
             # nNodes = length(cell.nodesID)

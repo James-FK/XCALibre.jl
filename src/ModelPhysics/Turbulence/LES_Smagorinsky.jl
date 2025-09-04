@@ -139,5 +139,14 @@ function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration
         ("p", model.momentum.p),
         ("nut", model.turbulence.nut)
     )
-    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+    
+    name = ""
+    if iteration == time
+        name = @sprintf "iteration_%i" iteration
+    else
+        # name = @sprintf "time_%.8f" iteration
+        name = @sprintf "time_%i" iteration
+    end
+    filename=name*".vtu"
+    write_results(filename, model.domain, outputWriter, config.boundaries, args...)
 end

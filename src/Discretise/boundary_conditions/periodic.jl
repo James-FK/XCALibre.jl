@@ -71,7 +71,7 @@ Function for construction of periodic boundary conditions.
     - `value` represents a `NamedTuple` with the following keyword arguments:
         - index -- ID used to find boundary geometry information in the mesh object
         - distance -- perpendicular distance between the patches
-        - face_map -- vector providing indeces to faces of match patch
+        - face_map -- vector providing indices to faces of match patch
         - ismaster -- flat to identify one of the patch pairs as the main patch
 
 ### Example

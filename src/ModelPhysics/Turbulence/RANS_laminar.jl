@@ -99,7 +99,15 @@ function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration
             ("p", model.momentum.p)
         )
     end
-    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+    name = ""
+    if iteration == time
+        name = @sprintf "iteration_%i" iteration
+    else
+        # name = @sprintf "time_%.8f" iteration
+        name = @sprintf "time_%i" iteration
+    end
+    filename=name*".vtu"
+    write_results(filename, model.domain, outputWriter, config.boundaries, args...)
 end
 
 function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
@@ -108,7 +116,15 @@ function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration
         ("U", model.momentum.U), 
         ("p", model.momentum.p),
     )
-    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+    name = ""
+    if iteration == time
+        name = @sprintf "iteration_%i" iteration
+    else
+        # name = @sprintf "time_%.8f" iteration
+        name = @sprintf "time_%i" iteration
+    end
+    filename=name*".vtu"
+    write_results(filename, model.domain, outputWriter, config.boundaries, args...)
 end
 
 
@@ -118,5 +134,14 @@ function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration
     args = (
         ("T", model.energy.T),
     )
-    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+    name = ""
+    if iteration == time
+        name = @sprintf "iteration_%i" iteration
+    else
+        # name = @sprintf "time_%.8f" iteration
+        name = @sprintf "time_%i" iteration
+    end
+    filename=name*".vtu"
+
+    write_results(filename, model.domain, outputWriter, config.boundaries, args...)
 end
