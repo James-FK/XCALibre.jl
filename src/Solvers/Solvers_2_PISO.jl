@@ -136,7 +136,6 @@ function PISO(
 
             grad!(∇p, pf, p, boundaries.p, time, config) 
             limit_gradient!(schemes.p.limiter, ∇p, p, config)
-
             # nonorthogonal correction (experimental)
             for i ∈ 1:ncorrectors
                 discretise!(p_eqn, p, config)       
