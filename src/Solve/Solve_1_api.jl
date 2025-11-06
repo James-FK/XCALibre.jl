@@ -239,7 +239,12 @@ function solve_system!(phiEqn::ModelEquation, setup, result, component, config) 
         M=P, itmax=itmax, atol=atol, rtol=rtol, ldiv=is_ldiv(precon)
         )
     # KernelAbstractions.synchronize(backend)
-
+    if typeof(phiEqn.model.terms[1].type) <: Time{CrankNicolson}
+        # @. b -= volumes/runtime.dt*values
+        @. x = 2x - values
+        # explicit_step!(phiEqn, x, values, config)
+        # explicit_step!(phiEqn, x, values, b, config)
+    end
     Krylov.iteration_count(solver) == itmax && @warn "Maximum number of iteration reached!"
 
     # println(statistics(solver).niter)
