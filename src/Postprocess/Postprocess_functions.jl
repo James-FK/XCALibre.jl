@@ -145,11 +145,11 @@ function boundary_average(patch::Symbol, field, fieldBCs, config; time=0)
 end
 
 ########### Must update
-wall_shear_stress(patch::Symbol, model)  = begin
+wall_shear_stress(patch::Symbol, model,config_boundaries)  = begin
     # Line below needs to change to do selection based on nut BC
     turbulence = model.turbulence
 
-    typeof(turbulence) <: RANS{Laminar} ? nut = ConstantScalar(0.0) : nut = model.turbulence.nut
+    typeof(turbulence) <: Laminar ? nut = ConstantScalar(0.0) : nut = model.turbulence.nut
     mesh = model.domain
     (; nu) = model.fluid
     (; U) = model.momentum
@@ -163,10 +163,10 @@ wall_shear_stress(patch::Symbol, model)  = begin
     z = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     tauw = FaceVectorField(x,y,z, mesh)
     Uw = zero(_get_float(mesh))
-    for i ∈ 1:length(boundaries.U)
-        if ID == boundaries.U[i].ID
-            Uw = boundaries.U[i].value
-            surface_normal_gradient!(tauw, U, boundaries.U[i].value, IDs_range)
+    for i ∈ 1:length(boundaries)
+        if ID == config_boundaries.U[i].ID
+            Uw = config_boundaries.U[i].value
+            surface_normal_gradient!(tauw, U, config_boundaries.U[i].value, IDs_range)
         end
     end
 

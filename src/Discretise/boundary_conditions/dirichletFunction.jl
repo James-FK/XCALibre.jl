@@ -41,36 +41,66 @@ end
     (; area, delta, centre) = face 
     flux = J*area/delta
     ap = term.sign*(-flux)
+
     # bc.value.update!(bc.value, centre, time, i)
-    value = bc.value(centre, time, i)[component.value]
+    raw = bc.value(centre, time, i)
+
+    value = if component === nothing
+        # Scalar equation (e.g. pressure)
+        raw
+    else
+        # Vector equation (e.g. velocity), pick component
+        raw[component.value]
+    end
     ap, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{Linear} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    raw = bc.value(face.centre, time, i)
+    value = if component === nothing
+        raw
+    else
+        raw[component.value]
+    end
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{Upwind} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    raw = bc.value(face.centre, time, i)
+    value = if component === nothing
+        raw
+    else
+        raw[component.value]
+    end
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{LUST} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    raw = bc.value(face.centre, time, i)
+    value = if component === nothing
+        raw
+    else
+        raw[component.value]
+    end
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{BoundedUpwind} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    raw = bc.value(face.centre, time, i)
+
+    value = if component === nothing
+        raw
+    else
+        raw[component.value]
+    end
     flux, ap*value
 end
 
