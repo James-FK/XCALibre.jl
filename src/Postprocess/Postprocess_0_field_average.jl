@@ -43,7 +43,7 @@ function FieldAverage(field; name::AbstractString, start::Union{Real,Nothing}=no
     return FieldAverage(field=field, name=name, mean=storage,start=start, stop=stop, update_interval=update_interval)
 end
 
-function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer) where {T<:ScalarField,S}
+function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,Strs) where {T<:ScalarField,S}
     if must_calculate(avg,iter,n_iterations)
         n = div(iter - avg.start,avg.update_interval) + 1
         current_field = avg.field
@@ -52,7 +52,7 @@ function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iteratio
     return nothing
 end
 
-function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer) where {T<:VectorField,S}
+function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,Strs) where {T<:VectorField,S}
     if must_calculate(avg,iter,n_iterations)
         n = div(iter - avg.start,avg.update_interval) + 1
         current_field = avg.field
