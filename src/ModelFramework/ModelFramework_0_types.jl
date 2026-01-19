@@ -3,7 +3,7 @@ export Operator, Source, Src
 export Time, Laplacian, Divergence, Si
 export Model, ScalarEquation, VectorEquation, ModelEquation, ScalarModel, VectorModel
 export nzval_index
-export spindex
+export spindex, spindex_csc
 
 # ABSTRACT TYPES 
 
@@ -100,8 +100,11 @@ end
 
 # Linear system matrix equation
 
-_build_A(backend::CPU, i, j, v, n) = sparsecsr(i, j, v, n, n)
-_build_opA(A::SparseMatricesCSR.SparseMatrixCSR) = LinearOperator(A)
+# _build_A(backend::CPU, i, j, v, n) = sparsecsr(i, j, v, n, n)
+# _build_opA(A::SparseMatricesCSR.SparseMatrixCSR) = LinearOperator(A)
+
+_build_A(backend::CPU, i, j, v, n) = SparseXCSR(sparsecsr(i, j, v, n, n))
+_build_opA(A::SparseXCSR) = A
 
 ## ORIGINAL STRUCTURE PARAMETERISED FOR GPU
 struct ScalarEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: AbstractEquation
@@ -112,11 +115,33 @@ struct ScalarEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: Abst
     Fx::VTf
 end
 Adapt.@adapt_structure ScalarEquation
-ScalarEquation(mesh::AbstractMesh) = begin
+
+# Catch all function for fields that do not extend matrix
+extend_matrix(mesh, BCs, i, j) = begin
+    # mesh = field.mesh
+    for BC ∈ BCs
+        i, j = _extend_matrix(BC, mesh, i, j) # implemented in module Discretise for each BC
+    end
+    return i, j
+end
+
+# Catch all method for all non-constraint boundary conditions i.e. do not modify matrix
+# Constraint-type BC that extend the sparse matrix should extend this method
+_extend_matrix(BC, mesh, i, j) = begin
+    return i, j
+end
+
+# ScalarEquation(mesh::AbstractMesh) = begin
+ScalarEquation(phi::ScalarField, BCs) = begin
+    mesh = phi.mesh
     nCells = length(mesh.cells)
     Tf = _get_float(mesh)
     mesh_temp = adapt(CPU(), mesh) # WARNING: Temp solution 
     i, j, v = sparse_matrix_connectivity(mesh_temp) # This needs to be a kernel
+    i, j = extend_matrix(mesh, BCs, i, j)
+    # i = [i; periodicConnectivity.i]
+    # j = [j; periodicConnectivity.j]
+    v = zeros(Tf, length(j))
     backend = _get_backend(mesh)
     # A = _convert_array!(sparse(i, j, v), backend)
     A = _build_A(backend, i, j, v, nCells)
@@ -127,9 +152,13 @@ ScalarEquation(mesh::AbstractMesh) = begin
         # KP.KrylovOperator(A), # small gain in performance
         # A,
 
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend)
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend)
+
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells)
         )
 end
 
@@ -144,11 +173,17 @@ struct VectorEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: Abst
     Fx::VTf
 end
 Adapt.@adapt_structure VectorEquation
-VectorEquation(mesh::AbstractMesh) = begin
+
+VectorEquation(psi::VectorField, BCs) = begin
+    mesh = psi.mesh
     nCells = length(mesh.cells)
     Tf = _get_float(mesh)
     mesh_temp = adapt(CPU(), mesh) # WARNING: Temp solution 
     i, j, v = sparse_matrix_connectivity(mesh_temp) # This needs to be a kernel
+    i, j = extend_matrix(mesh, BCs, i, j)
+    # i = [i; periodicConnectivity.i]
+    # j = [j; periodicConnectivity.j]
+    v = zeros(Tf, length(j))
     backend = _get_backend(mesh)
     # A = _convert_array!(sparse(i, j, v), backend) 
     # A0 = _convert_array!(sparse(i, j, v), backend)
@@ -165,12 +200,23 @@ VectorEquation(mesh::AbstractMesh) = begin
         # KP.KrylovOperator(A),
         # A,
 
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend),
-        _convert_array!(zeros(Tf, nCells), backend)
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend),
+        # _convert_array!(zeros(Tf, nCells), backend)
+
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        KernelAbstractions.zeros(backend, Tf, nCells)
         )
+end
+
+Base.show(io::IO, model_eqn::AbstractEquation) = begin
+    output = "Equation storage ready!"
+    print(io, output)
 end
 
 # Sparse matrix connectivity function definition
@@ -204,6 +250,21 @@ function spindex(rowptr::AbstractArray{T}, colval, i, j) where T
     ind = zero(T)
     for nzi in start_ind:end_ind
         if colval[nzi] == j
+            ind = nzi
+            break
+        end
+    end
+    return ind
+end
+
+# Sparse CSC format
+function spindex_csc(colptr::AbstractArray{T}, rowval, i, j) where T
+    start_ind = colptr[j]
+    end_ind = colptr[j+1] - one(T)
+
+    ind = zero(T)
+    for nzi in start_ind:end_ind
+        if rowval[nzi] == i
             ind = nzi
             break
         end

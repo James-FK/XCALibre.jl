@@ -19,12 +19,12 @@ For CFD researchers whose research involves developing new numerical methods, tu
 ### Multiple backends
 XCALibre.jl embraces parallelism out-of-the-box on all the compute backends supported by [KernelAbstractions.jl](https://juliagpu.github.io/KernelAbstractions.jl/stable/). That is,
 
-* GPU acceleration on Nvidia, AMD, Intel and Apple hardware
+* GPU acceleration on Nvidia, AMD and Intel hardware (Apple hardware is not supported yet)
 * Multi-threaded runs on CPUs
 
 !!! note
     
-    GPU functionality has only been tested on Nvidia hardware due to availability. Although GPUs from other vendors should also work correctly. Please open an issue if this is not the case so we can investigate. Notice that Apple hardware will not work as expected due to support for sparse matrices not being implemented yet on `Metal.jl`
+    GPU functionality has only been tested on Nvidia hardware due to availability. However, AMD and INTEL GPUs should also work correctly. Please open an issue if this is not the case so we can investigate. Apple hardware is currently not supported since sparse matrices have not yet been implemented in `Metal.jl`. Notice that some hardware may only support `Float32` operations, in such cases, the mesh should be loaded using the keyword argument `float_type=Float32` (please refer to the [Pre-processing](@ref) section in the user guide). 
 
 ### Mesh formats
 XCALibre.jl uses its own mesh format to allow the geometry and boundary information to be stored in a format that is suitable for both CPU and GPU calculations. `XCALibre.jl` does not yet provide mesh generation tools. Therefore, some mesh conversion tools for the following mesh formats are provided:
@@ -35,7 +35,7 @@ XCALibre.jl uses its own mesh format to allow the geometry and boundary informat
 
 !!! note
 
-    Although the mesh conversion tools for the OpenFOAM format can import grids designed for 2D simulations, it is not recommended to use OpenFOAM grids for 2D cases (at present, support for 2D OpenFOAM grids in progress). Instead, use a 2D grid generated in the .unv format. Also for 2D grids some requirements must be met when defining the geometry (see [Mesh generation and requirements](@ref))
+    Although the mesh conversion tools for the OpenFOAM format can import grids designed for 2D simulations, it is not possible to use OpenFOAM grids for 2D cases (at present, support for 2D OpenFOAM grids is in progress). Instead, use a 2D grid generated in the .unv format. Also for 2D grids some requirements must be met when defining the geometry (see [Mesh generation and requirements](@ref))
 
 ### Solvers
 XCALibre.jl ships with fluid solvers for steady and transient simulations, based on the SIMPLE and PISO algorithms. Currently, the following flow solvers are provided:
@@ -53,8 +53,8 @@ XCALibre.jl ships with fluid solvers for steady and transient simulations, based
 The list of turbulence models available is expected to expand. The following turbulence models are already available in XCALibre.jl:
 
 * Reynolds-Averaged Navier-Stokes (RANS)
-  * ``k-\omega`` - available in low-Reynolds (wall-resolving) and in high-Reynolds (wall functions) mode
-  * ``k-\omega`` LKE - transitional model using the Laminar Kinetic Energy concept to model transition onset
+  - ``k-\omega`` - available in low-Reynolds (wall-resolving) and in high-Reynolds (wall functions) mode
+  - ``k-\omega`` LKE - transitional model using the Laminar Kinetic Energy concept to model transition onset
   
 * Large Eddy Simulation (LES with implicit filtering)
   * Smagorinsky - classic eddy-viscosity sub-grid scale Smagorinsky model
@@ -91,9 +91,9 @@ U_eqn = (
 
 ### Capabilities, solvers, algorithms, models, etc.
 * Solver for highly compressible flows (including shockwaves)
-* Implement multithreaded sparse-matrix multiply for better multithreaded performance
+* Implement multithreaded sparse-matrix multiply for better multithreaded performance (done in v0.3.3)
 * Conjugate heat transfer
-* ``k-\epsilon`` turbulence model
+- ``k-\epsilon`` turbulence model
 * Implement parallel versions of more efficient preconditioners
 
 ### API

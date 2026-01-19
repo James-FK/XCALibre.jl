@@ -7,6 +7,7 @@ Modules = [
     XCALibre.UNV2, 
     XCALibre.UNV3, 
     XCALibre.FoamMesh, 
+    XCALibre.Multithread,
     XCALibre.Fields,
     XCALibre.ModelFramework,
     XCALibre.Discretise, 
@@ -15,6 +16,7 @@ Modules = [
     XCALibre.ModelPhysics,
     XCALibre.Simulate,
     XCALibre.Solvers,
-    XCALibre.Postprocess
+    XCALibre.Postprocess,
+    XCALibre.Preprocess
     ]
 ```

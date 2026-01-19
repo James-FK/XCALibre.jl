@@ -2,7 +2,7 @@ export piso!
 
 """
     cpiso!(model, config; 
-        limit_gradient=false, pref=nothing, ncorrectors=0, inner_loops=0)
+        output=VTK(), pref=nothing, ncorrectors=0, inner_loops=0)
 
 Incompressible and transient variant of the SIMPLE algorithm to solving coupled momentum and mass conservation equations. 
 
@@ -10,7 +10,7 @@ Incompressible and transient variant of the SIMPLE algorithm to solving coupled 
 
 - `model` reference to a `Physics` model defined by the user.
 - `config` Configuration structure defined by the user with solvers, schemes, runtime and hardware structures configuration details.
-- `limit_gradient` flag use to activate gradient limiters in the solver (default = `false`)
+- `output` select the format used for simulation results from `VTK()` or `OpenFOAM` (default = `VTK()`)
 - `pref` Reference pressure value for cases that do not have a pressure defining BC. Incompressible solvers only (default = `nothing`)
 - `ncorrectors` number of non-orthogonality correction loops (default = `0`)
 - `inner_loops` number to inner loops used in transient solver based on PISO algorithm (default = `0`)
@@ -24,11 +24,11 @@ Incompressible and transient variant of the SIMPLE algorithm to solving coupled 
 """
 function piso!(
     model, config; 
-    limit_gradient=false, pref=nothing, ncorrectors=0, inner_loops=2)
+    output=VTK(), pref=nothing, ncorrectors=0, inner_loops=2)
 
     residuals = setup_incompressible_solvers(
         PISO, model, config; 
-        limit_gradient=limit_gradient, 
+        output=output,
         pref=pref,
         ncorrectors=ncorrectors, 
         inner_loops=inner_loops
@@ -39,36 +39,34 @@ end
 
 function PISO(
     model, turbulenceModel, ∇p, U_eqn, p_eqn, config; 
-    limit_gradient=false, pref=nothing, ncorrectors=0, inner_loops=2
+    output=VTK(), pref=nothing, ncorrectors=0, inner_loops=2
     )
     
     # Extract model variables and configuration
-    (; U, p) = model.momentum
+    (; U, p, Uf, pf) = model.momentum
     (; nu) = model.fluid
     mesh = model.domain
-    (; solvers, schemes, runtime, hardware) = config
+    (; solvers, schemes, runtime, hardware, boundaries, postprocess) = config
     (; iterations, write_interval, dt) = runtime
     (; backend) = hardware
     
+    postprocess = convert_time_to_iterations(postprocess,model,dt,iterations)
     mdotf = get_flux(U_eqn, 2)
     nueff = get_flux(U_eqn, 3)
     rDf = get_flux(p_eqn, 1)
     divHv = get_source(p_eqn, 1)
 
-    @info "Initialise VTKWriter (Store mesh in host memory)"
-
-    VTKMeshData = initialise_writer(model.domain)
+    outputWriter = initialise_writer(output, model.domain)
     
     @info "Allocating working memory..."
 
     # Define aux fields 
     gradU = Grad{schemes.U.gradient}(U)
     gradUT = T(gradU)
-    S = StrainRate(gradU, gradUT)
-    S2 = ScalarField(mesh)
+    Uf = FaceVectorField(mesh)
+    S = StrainRate(gradU, gradUT, U, Uf)
 
     n_cells = length(mesh.cells)
-    Uf = FaceVectorField(mesh)
     pf = FaceScalarField(mesh)
     Hv = VectorField(mesh)
     rD = ScalarField(mesh)
@@ -76,23 +74,24 @@ function PISO(
     # Pre-allocate auxiliary variables
     TF = _get_float(mesh)
     TI = _get_int(mesh)
-    prev = zeros(TF, n_cells)
-    prev = _convert_array!(prev, backend) 
+    # prev = zeros(TF, n_cells)
+    # prev = _convert_array!(prev, backend) 
+    prev = KernelAbstractions.zeros(backend, TF, n_cells)
 
     # Pre-allocate vectors to hold residuals 
     R_ux = ones(TF, iterations)
     R_uy = ones(TF, iterations)
     R_uz = ones(TF, iterations)
     R_p = ones(TF, iterations)
-    cellsCourant =adapt(backend, zeros(TF, length(mesh.cells)))
+    cellsCourant = KernelAbstractions.zeros(backend, TF, n_cells)
     
     # Initial calculations
     time = zero(TF) # assuming time=0
     interpolate!(Uf, U, config)   
-    correct_boundaries!(Uf, U, U.BCs, time, config)
+    correct_boundaries!(Uf, U, boundaries.U, time, config)
     flux!(mdotf, Uf, config)
-    grad!(∇p, pf, p, p.BCs, time, config)
-    limit_gradient && limit_gradient!(∇p, p, config)
+    grad!(∇p, pf, p, boundaries.p, time, config)
+    limit_gradient!(schemes.p.limiter, ∇p, p, config)
 
     update_nueff!(nueff, nu, model.turbulence, config)
 
@@ -102,22 +101,25 @@ function PISO(
 
     progress = Progress(iterations; dt=1.0, showspeed=true)
 
-    @time for iteration ∈ 1:iterations
-        time = (iteration - 1)*dt
 
-        solve_equation!(U_eqn, U, solvers.U, xdir, ydir, zdir, config; time=time)
+    @time for iteration ∈ 1:iterations
+        time = iteration *dt
+
+        rx, ry, rz = solve_equation!(
+            U_eqn, U, boundaries.U, solvers.U, xdir, ydir, zdir, config; time=time)
           
         # Pressure correction
         inverse_diagonal!(rD, U_eqn, config)
         interpolate!(rDf, rD, config)
         remove_pressure_source!(U_eqn, ∇p, config)
         
+        rp = 0.0
         for i ∈ 1:inner_loops
             H!(Hv, U, U_eqn, config)
             
             # Interpolate faces
             interpolate!(Uf, Hv, config) # Careful: reusing Uf for interpolation
-            correct_boundaries!(Uf, Hv, U.BCs, time, config)
+            correct_boundaries!(Uf, Hv, boundaries.U, time, config)
             # div!(divHv, Uf, config)
 
             # new approach
@@ -125,45 +127,45 @@ function PISO(
             div!(divHv, mdotf, config)
             
             # Pressure calculations (previous implementation)
-            @. prev = p.values
-            solve_equation!(p_eqn, p, solvers.p, config; ref=pref, time=time)
+            # @. prev = p.values
+            xcal_foreach(prev, config) do i 
+                prev[i] = p[i]
+            end
+            rp = solve_equation!(p_eqn, p, boundaries.p, solvers.p, config; ref=pref, time=time)
             if i == inner_loops
                 explicit_relaxation!(p, prev, 1.0, config)
             else
                 explicit_relaxation!(p, prev, solvers.p.relax, config)
             end
 
-            grad!(∇p, pf, p, p.BCs, time, config) 
-            limit_gradient && limit_gradient!(∇p, p, config)
+            grad!(∇p, pf, p, boundaries.p, time, config) 
+            limit_gradient!(schemes.p.limiter, ∇p, p, config)
 
             # nonorthogonal correction (experimental)
             for i ∈ 1:ncorrectors
                 discretise!(p_eqn, p, config)       
-                apply_boundary_conditions!(p_eqn, p.BCs, nothing, time, config)
+                apply_boundary_conditions!(p_eqn, boundaries.p, nothing, time, config)
                 setReference!(p_eqn, pref, 1, config)
                 nonorthogonal_face_correction(p_eqn, ∇p, rDf, config)
                 update_preconditioner!(p_eqn.preconditioner, p.mesh, config)
-                solve_system!(p_eqn, solvers.p, p, nothing, config)
+                rp = solve_system!(p_eqn, solvers.p, p, nothing, config)
 
                 if i == ncorrectors
                     explicit_relaxation!(p, prev, 1.0, config)
                 else
                     explicit_relaxation!(p, prev, solvers.p.relax, config)
                 end
-                grad!(∇p, pf, p, p.BCs, time, config) 
-                limit_gradient && limit_gradient!(∇p, p, config)
+                grad!(∇p, pf, p, boundaries.p, time, config) 
+                limit_gradient!(schemes.p.limiter, ∇p, p, config)
             end
 
             # old approach - keep for now!
             # correct_velocity!(U, Hv, ∇p, rD, config)
             # interpolate!(Uf, U, config)
-            # correct_boundaries!(Uf, U, U.BCs, time, config)
+            # correct_boundaries!(Uf, U, boundaries.U, time, config)
             # flux!(mdotf, Uf, config) # old approach
 
             # new approach
-            interpolate!(Uf, U, config) # velocity from momentum equation
-            correct_boundaries!(Uf, U, U.BCs, time, config)
-            flux!(mdotf, Uf, config)
             correct_mass_flux(mdotf, p, rDf, config)
             correct_velocity!(U, Hv, ∇p, rD, config)
 
@@ -171,20 +173,15 @@ function PISO(
         
         # correct_mass_flux(mdotf, p, rDf, config) # new approach
 
-
-    # grad!(gradU, Uf, U, U.BCs, time, config)
-    # limit_gradient && limit_gradient!(gradU, U, config)
-
-    turbulence!(turbulenceModel, model, S, S2, prev, time, config) 
+    turbulence!(turbulenceModel, model, S, prev, time, config) 
     update_nueff!(nueff, nu, model.turbulence, config)
 
-    residual!(R_ux, U_eqn, U.x, iteration, xdir, config)
-    residual!(R_uy, U_eqn, U.y, iteration, ydir, config)
-    if typeof(mesh) <: Mesh3
-        residual!(R_uz, U_eqn, U.z, iteration, zdir, config)
-    end
-    residual!(R_p, p_eqn, p, iteration, nothing, config)
     maxCourant = max_courant_number!(cellsCourant, model, config)
+
+    R_ux[iteration] = rx
+    R_uy[iteration] = ry
+    R_uz[iteration] = rz
+    R_p[iteration] = rp
 
     ProgressMeter.next!(
         progress, showvalues = [
@@ -194,167 +191,17 @@ function PISO(
             (:Uy, R_uy[iteration]),
             (:Uz, R_uz[iteration]),
             (:p, R_p[iteration]),
+            turbulenceModel.state.residuals...
             ]
         )
 
+    runtime_postprocessing!(postprocess,iteration,iterations)
+    
     if iteration%write_interval + signbit(write_interval) == 0
-        model2vtk(model, VTKMeshData, @sprintf "timestep_%.6d" iteration)
+        save_output(model, outputWriter, iteration, time, config)
+        save_postprocessing(postprocess,iteration,time,mesh,outputWriter,config.boundaries)
     end
 
     end # end for loop
-
     return (Ux=R_ux, Uy=R_uy, Uz=R_uz, p=R_p)
-end
-
-### GRADIENT LIMITER - EXPERIMENTAL
-
-function limit_gradient!(∇F, F, config)
-    (; hardware) = config
-    (; backend, workgroup) = hardware
-
-    mesh = F.mesh
-    (; cells, cell_neighbours, cell_faces, cell_nsign, faces) = mesh
-
-    minPhi0 = maximum(F.values) # use min value so all values compared are larger
-    maxPhi0 = minimum(F.values)
-    (; x, y, z) = ∇F.result
-
-    kernel! = _limit_gradient!(backend, workgroup)
-    kernel!(x, y, z, F, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi0, maxPhi0, ndrange=length(cells))
-    KernelAbstractions.synchronize(backend)
-end
-
-function limit_gradient!(∇F::Grad{S,FF,R,I,M}, F, config) where {S,FF,R<:TensorField,I,M}
-    (; hardware) = config
-    (; backend, workgroup) = hardware
-
-    mesh = F.mesh
-    (; cells, cell_neighbours, cell_faces, cell_nsign, faces) = mesh
-
-    # minPhi0 = maximum(F.values) # use min value so all values compared are larger
-    # maxPhi0 = minimum(F.values)
-    (; xx, yx, zx) = ∇F.result
-    (; xy, yy, zy) = ∇F.result
-    (; xz, yz, zz) = ∇F.result
-
-    minPhi0 = maximum(F.x.values) # use min value so all values compared are larger
-    maxPhi0 = minimum(F.x.values)
-    kernel! = _limit_gradient!(backend, workgroup)
-    kernel!(xx, yx, zx, F.x, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi0, maxPhi0, ndrange=length(cells))
-    KernelAbstractions.synchronize(backend)
-
-    minPhi0 = maximum(F.y.values) # use min value so all values compared are larger
-    maxPhi0 = minimum(F.y.values)
-    kernel! = _limit_gradient!(backend, workgroup)
-    kernel!(xy, yy, zy, F.y, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi0, maxPhi0, ndrange=length(cells))
-    KernelAbstractions.synchronize(backend)
-
-    minPhi0 = maximum(F.z.values) # use min value so all values compared are larger
-    maxPhi0 = minimum(F.z.values)
-    kernel! = _limit_gradient!(backend, workgroup)
-    kernel!(xz, yz, zz, F.z, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi0, maxPhi0, ndrange=length(cells))
-    KernelAbstractions.synchronize(backend)
-end
-
-# @kernel function _limit_gradient!(x, y, z, F, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi, maxPhi)
-#     cID = @index(Global)
-
-#     cell = cells[cID]
-#     faces_range = cell.faces_range
-#     phiP = F[cID]
-#     maxPhi = minPhi = phiP
-
-#     for fi ∈ faces_range
-#         nID = cell_neighbours[fi]
-#         phiN = F[nID]
-#         maxPhi = max(phiN, maxPhi)
-#         minPhi = min(phiN, minPhi)
-#     end
-
-#     # g0 = ∇F[cID]
-#     g0 = SVector{3}(x[cID] , y[cID] , z[cID])
-
-#     cc = cell.centre
-
-#     for fi ∈ faces_range 
-#         fID = cell_faces[fi]
-#         face = faces[fID]
-#         nID = face.ownerCells[2]
-#         # phiN = F[nID]
-#         normal = face.normal
-#         nsign = cell_nsign[fi]
-#         na = nsign*normal
-
-#         fc = face.centre 
-#         cc_fc = fc - cc
-#         n0 = cc_fc/norm(cc_fc)
-#         gn = g0⋅n0
-#         δϕ = g0⋅cc_fc
-#         gτ = g0 - gn*n0
-#         if (maxPhi > phiP) && (δϕ > maxPhi - phiP)
-#             g0 = gτ + na*(maxPhi - phiP)
-#         elseif (minPhi < phiP) && (δϕ < minPhi - phiP)
-#             g0 = gτ + na*(minPhi - phiP)
-#         end            
-#     end
-#     x.values[cID] = g0[1]
-#     y.values[cID] = g0[2]
-#     z.values[cID] = g0[3]
-# end
-
-@kernel function _limit_gradient!(x, y, z, F, cells, cell_neighbours, cell_faces, cell_nsign, faces, minPhi, maxPhi)
-    cID = @index(Global)
-
-    cell = cells[cID]
-    faces_range = cell.faces_range
-    phiP = F[cID]
-    phiMax = phiMin = phiP
- 
-    for fi ∈ faces_range
-        nID = cell_neighbours[fi]
-        phiN = F[nID]
-        phiMax = max(phiN, phiMax)
-        phiMin = min(phiN, phiMin)
-    end
-
-    # g0 = ∇F[cID]
-    grad0 = SVector{3}(x[cID] , y[cID] , z[cID])
-
-    cc = cell.centre
-    limiter = 1
-    limiterf = 1
-    for fi ∈ faces_range 
-        fID = cell_faces[fi]
-        nID = cell_neighbours[fi]
-        face = faces[fID]
-        cellN = cells[nID]
-        # nID = face.ownerCells[2]
-        # phiN = F[nID]
-        normal = face.normal
-        nsign = cell_nsign[fi]
-        na = nsign*normal
-
-        # r = fc - cc
-        # fc = face.centre
-
-        nc = cellN.centre
-        r = nc - cc
-        δϕ = r⋅grad0
-
-        # rn = (nc - cc) ⋅ na
-        # gradn = grad0⋅na
-        # δϕ = rn* gradn
-        if δϕ > 0
-            limiterf = min(1, (phiMax - phiP)/δϕ)
-        elseif δϕ < 0
-            limiterf = min(1, (phiMin - phiP)/δϕ)
-        else
-            limiterf = 1
-        end
-        limiter = min(limiterf, limiter)
-    end
-    grad0 *= limiter
-    x.values[cID] = grad0[1]
-    y.values[cID] = grad0[2]
-    z.values[cID] = grad0[3]
 end

@@ -10,7 +10,9 @@ struct Laminar <: AbstractRANSModel end
 Adapt.@adapt_structure Laminar
 
 # Model type definition (hold equation definitions and internal data)
-struct LaminarModel end 
+struct LaminarModel{S1}
+    state::S1 # required field for all turbulence models
+end 
 Adapt.@adapt_structure LaminarModel
 
 # Model API constructor (pass user input as keyword arguments and process if needed)
@@ -25,9 +27,9 @@ end
 # Model initialisation
 """
     function initialise(
-        turbulence::Laminar, model::Physics{T,F,M,Tu,E,D,BI}, mdotf, peqn, config
-        ) where {T,F,M,Tu,E,D,BI}
-    return LaminarModel()
+        turbulence::Laminar, model::Physics{T,F,SO,M,Tu,E,D,BI}, mdotf, peqn, config
+        ) where {T,F,SO,M,Tu,E,D,BI}
+    return LaminarModel(), config
 end
 
 Initialisation of turbulent transport equations.
@@ -45,17 +47,16 @@ Initialisation of turbulent transport equations.
 
 """
 function initialise(
-    turbulence::Laminar, model::Physics{T,F,M,Tu,E,D,BI}, mdotf, peqn, config
-    ) where {T,F,M,Tu,E,D,BI}
-    return LaminarModel()
+    turbulence::Laminar, model::Physics{T,F,SO,M,Tu,E,D,BI}, mdotf, peqn, config
+    ) where {T,F,SO,M,Tu,E,D,BI}
+    state = ModelState((), true) # stores residual and convergence information
+    return LaminarModel(state), config
 end
 
 # Model solver call (implementation)
-
-# Model solver call (implementation)
 """
-    turbulence!(rans::LaminarModel, model::Physics{T,F,M,Tu,E,D,BI}, S, S2, prev, time, config
-    ) where {T,F,M,Tu<:Laminar,E,D,BI}
+    turbulence!(rans::LaminarModel, model::Physics{T,F,SO,M,Tu,E,D,BI}, S, prev, time, config
+    ) where {T,F,SO,M,Tu<:Laminar,E,D,BI}
 
 Run turbulence model transport equations.
 
@@ -63,21 +64,29 @@ Run turbulence model transport equations.
 - `rans::LaminarModel` -- Laminar turbulence model.
 - `model`  -- Physics model defined by user.
 - `S`   -- Strain rate tensor.
-- `S2`  -- Square of the strain rate magnitude.
 - `prev`  -- Previous field.
 - `time`   -- 
 - `config` -- Configuration structure defined by user with solvers, schemes, runtime and 
               hardware structures set.
 
 """
-function turbulence!(rans::LaminarModel, model::Physics{T,F,M,Tu,E,D,BI}, S, S2, prev, time, config
-    ) where {T,F,M,Tu<:Laminar,E,D,BI}
+function turbulence!(rans::LaminarModel, model::Physics{T,F,SO,M,Tu,E,D,BI}, S, prev, time,config
+    ) where {T,F,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
+    nothing
+end
+
+function turbulence!(
+    rans::LaminarModel, model::Physics{T,F,SO,M,Tu,E,D,BI}, S, prev, time, config
+    ) where {T,F<:AbstractCompressible,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
+    (; U, Uf, gradU) = S
+    grad!(gradU, Uf, U, config.boundaries.U, time, config)
+    limit_gradient!(config.schemes.U.limiter, gradU, U, config)
     nothing
 end
 
 # Specialise VTK writer
-function model2vtk(model::Physics{T,F,M,Tu,E,D,BI}, VTKWriter, name
-    ) where {T,F,M,Tu<:Laminar,E,D,BI}
+function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
+    ) where {T,F,SO,M,Tu<:Laminar,E,D,BI}
     if typeof(model.fluid)<:AbstractCompressible
         args = (
             ("U", model.momentum.U), 
@@ -90,14 +99,24 @@ function model2vtk(model::Physics{T,F,M,Tu,E,D,BI}, VTKWriter, name
             ("p", model.momentum.p)
         )
     end
-    write_vtk(name, model.domain, VTKWriter, args...)
+    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
 end
 
-function model2vtk(model::Physics{T,F,M,Tu,E,D,BI}, VTKWriter, name
-    ) where {T,F,M,Tu<:Laminar,E<:Nothing,D,BI}
+function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
+    ) where {T,F,SO,M,Tu<:Laminar,E<:Nothing,D,BI}
     args = (
         ("U", model.momentum.U), 
         ("p", model.momentum.p),
     )
-    write_vtk(name, model.domain, VTKWriter, args...)
+    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+end
+
+
+function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
+    ) where {T,F<:Nothing,SO,M,Tu<:Nothing,E<:Conduction,D,BI}
+    
+    args = (
+        ("T", model.energy.T),
+    )
+    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
 end

@@ -28,7 +28,9 @@ EXAMPLES_PAGES = Any[
     "02_2d-incompressible-transient-cylinder.md",
     "03_2d-constant-temperature-flat-plate.md",
     "04_2d-inflow-using-Flux.md",
-    "05_2d-aerofoil-inflow-optimisation.md"
+    "05_2d-aerofoil-inflow-optimisation.md",
+    "06_2d-laplace-solver.md",
+    "07_2d-bump-komegaSST.md"
 ]
 
 makedocs(
@@ -42,6 +44,7 @@ makedocs(
         "Examples" => "examples/" .* EXAMPLES_PAGES,
         "User Guide" => "user_guide/" .* USER_GUIDE_PAGES,
         hide("Theory Guide" => "theory_guide/introduction.md"),
+        "benchmarks.md",
         "contributor_guide.md",
         "reference.md",
         "release_notes.md"

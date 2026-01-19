@@ -90,16 +90,16 @@ end
 function _smoother_launch(
     backend::GPU, smoother, x, b, nzval, colval, rowptr, workgroup
     )
-    krange = length(x)
-    kernel! = _apply_smoother!(backend, workgroup)
+    ndrange = length(x)
+    kernel! = _apply_smoother_gpu!(_setup(backend, workgroup, ndrange)...)
     for _ ∈ 1:smoother.loops
-        kernel!(smoother, x, b, nzval, colval, rowptr, ndrange = krange)
-        KernelAbstractions.synchronize(backend)
-        x .= smoother.x_temp
+        kernel!(smoother, x, b, nzval, colval, rowptr)
+        # KernelAbstractions.synchronize(backend)
+        @inbounds x .= smoother.x_temp
     end
 end
 
-@kernel function _apply_smoother!(
+@kernel function _apply_smoother_gpu!(
     smoother::JacobiSmoother, x, b, nzval, colval, rowptr
     )
     cID = @index(Global)

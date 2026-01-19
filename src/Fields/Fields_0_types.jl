@@ -1,9 +1,18 @@
 export AbstractField
-export ConstantScalar, ConstantVector
+export ScalarFloat, ConstantScalar, ConstantVector
 export AbstractScalarField, ScalarField, FaceScalarField
 export AbstractVectorField, VectorField, FaceVectorField
-export AbstractTensorField, TensorField, T
+export AbstractTensorField, TensorField, T, SymmetricTensorField
+export StrainRate, Vorticity, Dev, Sqr, MagSqr
+export _mesh
 export initialise!
+
+struct ScalarFloat{DTYPE}
+    zero::DTYPE 
+end 
+
+ScalarFloat(mesh::AbstractMesh) = ScalarFloat(zero(_get_float(mesh)))
+@inline (scalar::ScalarFloat{DTYPE})(v::Number) where DTYPE = DTYPE(v)
 
 # ABSTRACT TYPES
 
@@ -11,10 +20,6 @@ abstract type AbstractField end
 abstract type AbstractScalarField <: AbstractField end
 abstract type AbstractVectorField <: AbstractField end
 abstract type AbstractTensorField <: AbstractField end
-
-Base.getindex(field::AbstractField, i::I) where I<:Integer = begin
-    field(i)
-end
 
 Base.show(io::IO, field::AbstractField) = print(io, typeof(field).name.wrapper)
 
@@ -26,57 +31,63 @@ end
 Adapt.@adapt_structure ConstantScalar
 Base.getindex(s::ConstantScalar, i::Integer) = s.values
 
+
 struct ConstantVector{V<:Number} <: AbstractVectorField
     x::V
     y::V
     z::V
 end
 Adapt.@adapt_structure ConstantVector
-Base.getindex(v::ConstantVector, i::Integer) = SVector{3, eltype(v.x)}(v.x[i], v.y[i], v.z[i])
+Base.getindex(v::ConstantVector, i::Integer) = SVector{3, eltype(v.x)}(v.x, v.y, v.z)
+
+# Handle cases where `Nothing` is passed to the constructor (e.g. in Solid constructor)
+ConstantScalar(value::Nothing) = nothing
+ConstantVector(value::Nothing) = nothing
+
 
 # FIELDS 
 """
-    struct ScalarField{VF,M<:AbstractMesh,BC} <: AbstractScalarField
+    struct ScalarField{VF,M,BC} <: AbstractScalarField
         values::VF  # scalar values at cell centre
         mesh::M     # reference to mesh
         BCs::BC     # store user-provided boundary conditions
     end
 """
-struct ScalarField{VF,M<:AbstractMesh,BC} <: AbstractScalarField
+struct ScalarField{VF,M} <: AbstractScalarField
     values::VF  # scalar values at cell centre
     mesh::M     # reference to mesh
-    BCs::BC     # store user-provided boundary conditions
 end
 Adapt.@adapt_structure ScalarField
-ScalarField(mesh::AbstractMesh) =begin
+ScalarField(mesh::AbstractMesh; store_mesh=true) =begin
     ncells  = length(mesh.cells)
     F = _get_float(mesh)
     backend = _get_backend(mesh)
-    arr = _convert_array!(zeros(F,ncells), backend)
-    ScalarField(arr, mesh, ())
-end
-ScalarField(values::Vector{Float64}, mesh::AbstractMesh) =begin
-    ncells  = length(mesh.cells)
-    F = _get_float(mesh)
-    backend = _get_backend(mesh)
-    arr = _convert_array!(values, backend)
-    ScalarField(arr, mesh, ())
+    arr = KernelAbstractions.zeros(backend, F, ncells)
+    if store_mesh
+        return ScalarField(arr, mesh)
+    else
+        return ScalarField(arr, ())
+    end
 end
 
-struct FaceScalarField{VF,M<:AbstractMesh} <: AbstractScalarField
-    values::VF#Vector{F}
+struct FaceScalarField{VF,M} <: AbstractScalarField
+    values::VF
     mesh::M
 end
 Adapt.@adapt_structure FaceScalarField
-FaceScalarField(mesh::AbstractMesh) = begin
+
+FaceScalarField(mesh::AbstractMesh; store_mesh=true) = begin
     nfaces  = length(mesh.faces)
     F = _get_float(mesh)
     backend = _get_backend(mesh)
-    arr = _convert_array!(zeros(F,nfaces), backend)
-    FaceScalarField(arr, mesh) #Make it pretty
+    arr = KernelAbstractions.zeros(backend, F, nfaces)
+    if store_mesh
+        return FaceScalarField(arr, mesh)
+    else
+        return FaceScalarField(arr, ())
+    end
 end
 
-# (s::AbstractScalarField)(i::Integer) = s.values[i]
 Base.getindex(s::AbstractScalarField, i::I) where I<:Integer = begin
     s.values[i]
 end
@@ -85,6 +96,8 @@ Base.setindex!(s::AbstractScalarField, x, i::I) where I<:Integer = begin
 end
 Base.length(s::AbstractScalarField) = length(s.values)
 Base.eachindex(s::AbstractScalarField) = eachindex(s.values)
+Base.eltype(s::AbstractScalarField) = eltype(s.values)
+KA.get_backend(s::AbstractScalarField) = KA.get_backend(s.values)
 
 # VECTOR FIELD IMPLEMENTATION
 
@@ -97,27 +110,21 @@ Base.eachindex(s::AbstractScalarField) = eachindex(s.values)
         BCs::BC
     end
 """
-struct VectorField{S1<:ScalarField,S2,S3,M<:AbstractMesh,BC} <: AbstractVectorField
+struct VectorField{S1<:ScalarField,S2,S3,M<:AbstractMesh} <: AbstractVectorField
     x::S1
     y::S2
     z::S3
     mesh::M
-    BCs::BC
+    # BCs::BC
 end
 Adapt.@adapt_structure VectorField
+
 VectorField(mesh::AbstractMesh) = begin
-    ncells = length(mesh.cells)
-    F = _get_float(mesh) #eltype(mesh.nodes[1].coords) #TEMPORARY SOLUTION, RUN BY HUMBERTO
-    backend = _get_backend(mesh)
-    arr1 = _convert_array!(zeros(F,ncells), backend)
-    arr2 = _convert_array!(zeros(F,ncells), backend)
-    arr3 = _convert_array!(zeros(F,ncells), backend)
     VectorField(
-        ScalarField(arr1, mesh, ()),
-        ScalarField(arr2, mesh, ()), 
-        ScalarField(arr3, mesh, ()), 
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false), 
+        ScalarField(mesh, store_mesh=false), 
         mesh,
-        () # to hold x, y, z and combined BCs
         )
 end
 
@@ -129,29 +136,55 @@ struct FaceVectorField{S1<:FaceScalarField,S2,S3,M} <: AbstractVectorField
 end
 Adapt.@adapt_structure FaceVectorField
 FaceVectorField(mesh::AbstractMesh) = begin
-    nfaces = length(mesh.faces)
-    F = _get_float(mesh)
-    backend = _get_backend(mesh)
-    arr1 = _convert_array!(zeros(F,nfaces), backend)
-    arr2 = _convert_array!(zeros(F,nfaces), backend)
-    arr3 = _convert_array!(zeros(F,nfaces), backend)
     FaceVectorField(
-        FaceScalarField(arr1, mesh),
-        FaceScalarField(arr2, mesh), 
-        FaceScalarField(arr3, mesh),
+        FaceScalarField(mesh, store_mesh=false),
+        FaceScalarField(mesh, store_mesh=false), 
+        FaceScalarField(mesh, store_mesh=false),
         mesh)
 end
 
-# Base.getindex(v::AbstractVectorField, i::Integer) = @inbounds SVector{3, eltype(v.x)}(v.x[i], v.y[i], v.z[i])
 Base.getindex(v::AbstractVectorField, i::Integer) = @inbounds SVector{3}(v.x[i], v.y[i], v.z[i])
-Base.setindex!(v::AbstractVectorField, x::SVector{3, T}, i::Integer) where T= begin
+Base.setindex!(v::AbstractVectorField, vec::SVector{3, T}, i::Integer) where T= begin
     # length(x) == 3 || throw("Vectors must have 3 components")
-    v.x[i] = x[1]
-    v.y[i] = y[2]
-    v.z[i] = z[3]
+    (; x, y, z) = v
+    x[i] = vec[1]
+    y[i] = vec[2]
+    z[i] = vec[3]
 end
 Base.length(v::AbstractVectorField) = length(v.x)
 Base.eachindex(v::AbstractVectorField) = eachindex(v.x)
+Base.eltype(v::AbstractVectorField) = eltype(v.x)
+KA.get_backend(v::AbstractVectorField) = KA.get_backend(v.x)
+
+struct Sqr{N,T<:AbstractVectorField} <: AbstractTensorField
+    scale::N
+    parent::T 
+end
+Adapt.@adapt_structure Sqr
+
+# Sqr(scale::Number, field) = Sqr(scale, field)
+Sqr(field) = Sqr(1, field)
+
+Base.getindex(vec::Sqr{N,Field}, i::I) where {N,Field<:AbstractVectorField,I<:Integer} = begin
+    vi = vec.parent[i]
+    vec.scale*vi*vi'
+end
+_mesh(field::Sqr) = _mesh(field.parent)
+
+struct MagSqr{N,T<:AbstractField} <: AbstractScalarField
+    scale::N
+    parent::T 
+end
+Adapt.@adapt_structure MagSqr
+
+# MagSqr(scale::Number, field) = MagSqr(scale, field)
+MagSqr(field) = MagSqr(1, field)
+
+Base.getindex(vec::MagSqr{N,Field}, i::I) where {N,Field<:AbstractField,I<:Integer} = begin
+    vi = vec.parent[i]
+    vec.scale*vi⋅vi
+end
+_mesh(field::MagSqr) = _mesh(field.parent)
 
 # TENSORFIELD IMPLEMENTATION
 
@@ -170,15 +203,15 @@ end
 Adapt.@adapt_structure TensorField
 TensorField(mesh::AbstractMesh) = begin
     TensorField(
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
-        ScalarField(mesh),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
+        ScalarField(mesh, store_mesh=false),
         mesh
     )
 end
@@ -198,7 +231,7 @@ Base.getindex(T::TensorField, i::Integer) = begin
         )
 end
 
-Base.setindex!(T::TensorField, t::SMatrix{3,3,F,9}, i::Integer) where F= begin
+Base.setindex!(T::TensorField, t::SMatrix{3,3,F,9}, i::Integer) where F = begin
     T.xx[i] = t[1,1]
     T.yx[i] = t[2,1]
     T.zx[i] = t[3,1]
@@ -212,6 +245,50 @@ end
 
 Base.length(t::AbstractTensorField) = length(t.xx)
 Base.eachindex(t::AbstractTensorField) = eachindex(t.xx)
+KA.get_backend(t::AbstractTensorField) = KA.get_backend(t.xx)
+_mesh(field::AbstractField) = field.mesh # catch all accessor to mesh
+
+#Symmetric tensor 
+struct SymmetricTensorField{S1,S2,S3,S4,S5,S6,S7,S8,S9,M} <: AbstractTensorField
+    xx::S1
+    xy::S2
+    xz::S3 
+    yx::S4 
+    yy::S5 
+    yz::S6 
+    zx::S7 
+    zy::S8
+    zz::S9
+    mesh::M
+end
+function Adapt.adapt_structure(to, S::SymmetricTensorField)
+    xx = Adapt.adapt(to, S.xx)
+    xy = Adapt.adapt(to, S.xy)
+    xz = Adapt.adapt(to, S.xz)
+    yy = Adapt.adapt(to, S.yy)
+    yz = Adapt.adapt(to, S.yz)
+    zz = Adapt.adapt(to, S.zz)
+    mesh = Adapt.adapt(to, S.mesh)
+    return SymmetricTensorField(xx, xy, xz, xy, yy, yz, xz, yz, zz, mesh)
+end
+# Adapt.@adapt_structure SymmetricTensorField
+
+SymmetricTensorField(mesh::AbstractMesh) = begin
+    xx = ScalarField(mesh, store_mesh=false)
+    xy = ScalarField(mesh, store_mesh=false)
+    xz = ScalarField(mesh, store_mesh=false)
+    yy = ScalarField(mesh, store_mesh=false)
+    yz = ScalarField(mesh, store_mesh=false)
+    zz = ScalarField(mesh, store_mesh=false)
+
+    #symmetric components
+    yx = xy
+    zx = xz 
+    zy = yz
+    SymmetricTensorField(xx,xy,xz,yx,yy,yz,zx,zy,zz,mesh)
+end
+
+
 
 # TRANSPOSE IMPLEMENTATION
 
@@ -235,6 +312,44 @@ Base.getindex(t::T{F}, i::Integer) where F<:TensorField = begin # type calls nee
         )
 end
 
+struct Vorticity{TU, GT} <: AbstractTensorField 
+    U::TU
+    gradU::GT 
+end
+Adapt.Adapt.@adapt_structure Vorticity
+_mesh(field::Vorticity) = _mesh(field.U)
+
+Base.getindex(S::Vorticity, i::I) where {I<:Integer} = begin
+    gradi = S.gradU[i]
+    0.5*(gradi - gradi')
+end
+
+struct StrainRate{G, GT, TU, TUF} <: AbstractTensorField
+    gradU::G
+    gradUT::GT
+    U::TU
+    Uf::TUF
+end
+Adapt.@adapt_structure StrainRate
+_mesh(field::StrainRate) = _mesh(field.U)
+
+Base.getindex(S::StrainRate{G, GT, TU, TUF}, i::I) where {G, GT, TU, TUF, I<:Integer} = begin
+    gradi = S.gradU[i]
+    0.5*(gradi + gradi')
+end
+
+struct Dev{T<:AbstractTensorField} <: AbstractTensorField
+    parent::T 
+end
+Adapt.@adapt_structure Dev 
+
+Base.getindex(T::Dev{Tensor}, i::Idx) where {Tensor<:AbstractTensorField,Idx<:Integer} = begin
+    Ti = T.parent[i]
+    Ti - 1/3*tr(Ti)*I
+end
+
+_mesh(field::Dev) = _mesh(field.parent)
+
 # Initialise Scalar and Vector fields
 """
     function initialise!(field, value) # dummy function for documentation
@@ -246,8 +361,8 @@ This function will set the given `field` to the `value` provided in-place. Usefu
 
 # Input arguments
 
-* `field` specifies the field to be initialised. The field must be either a `AbractScalarField` or `AbstractVectorField`
-* `value` defines the value to be set. This should be a scalar or vector (3 components) depending on the field to be modified e.g. for an `AbstractVectorField` we can specify as `value=[10,0,0]`
+- `field` specifies the field to be initialised. The field must be either a `AbractScalarField` or `AbstractVectorField`
+- `value` defines the value to be set. This should be a scalar or vector (3 components) depending on the field to be modified e.g. for an `AbstractVectorField` we can specify as `value=[10,0,0]`
 
 Note: in most cases the fields to be modified are stored within a physics model i.e. a `Physics` object. Thus, the argument `value` must fully qualify the model. For example, if we have created a `Physics` model named `mymodel` to set the velocity field, `U`, we would set the argument `field` to `mymodel.momentum.U`. See the example below.
 
@@ -281,7 +396,7 @@ function initialise!(s::AbstractScalarField, value::V) where V
     if s_type <: Number
         s.values .= convert(s_type, value)
     else
-        trow("ScalarFields should be initialised with single numbers. The value provided is of type $(typeof(value))")
+        trow("ScalarFields should be initialised with numbers. The value provided is of type $(typeof(value))")
     end
     nothing
 end

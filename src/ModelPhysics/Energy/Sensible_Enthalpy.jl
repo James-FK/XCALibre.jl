@@ -8,33 +8,33 @@ export Ttoh, htoT!, Ttoh!, thermo_Psi!
 Type that represents energy model, coefficients and respective fields.
 
 ### Fields
-- 'h'    -- Sensible enthalpy ScalarField.
-- 'T'    -- Temperature ScalarField.
-- 'hf'   -- Sensible enthalpy FaceScalarField.
-- 'Tf'   -- Temperature FaceScalarField.
-- 'K'    -- Specific kinetic energy ScalarField.
-- 'dpdt' -- Pressure time derivative ScalarField.
-- 'updated_BC' -- Boundary condition function to convert temperature to sensible enthalp on 
-                    on a fixed value boudary.
-- 'coeffs' -- A tuple of model coefficients.
+- `h`: Sensible enthalpy ScalarField.
+- `T`: Terature ScalarField.
+- `hf`: Sensible enthalpy FaceScalarField.
+- `Tf`: Temperature FaceScalarField.
+- `K`: Specific kinetic energy ScalarField.
+- `dpdt`: Pressure time derivative ScalarField.
+- `coeffs`: A tuple of model coefficients.
 
 """
-struct SensibleEnthalpy{S1,S2,F1,F2,S3,S4,F,C} <: AbstractEnergyModel
+# struct SensibleEnthalpy{S1,S2,F1,F2,S3,S4,F,C} <: AbstractEnergyModel
+struct SensibleEnthalpy{S1,S2,F1,F2,S3,S4,C} <: AbstractEnergyModel
     h::S1
     T::S2
     hf::F1
     Tf::F2
     K::S3
     dpdt::S4
-    update_BC::F
+    # update_BC::F
     coeffs::C
 end
 Adapt.@adapt_structure SensibleEnthalpy
 
-struct Sensible_Enthalpy_Model{E1}
+struct SensibleEnthalpyModel{E1,State}
     energy_eqn::E1 
+    state::State
 end
-Adapt.@adapt_structure Sensible_Enthalpy_Model
+Adapt.@adapt_structure SensibleEnthalpyModel
 
 # Model API constructor
 Energy{SensibleEnthalpy}(; Tref) = begin
@@ -43,7 +43,7 @@ Energy{SensibleEnthalpy}(; Tref) = begin
     Energy{SensibleEnthalpy,ARG}(coeffs)
 end
 
-# Functor as consturctor
+# Functor as constructor
 (energy::Energy{EnergyModel, ARG})(mesh, fluid) where {EnergyModel<:SensibleEnthalpy,ARG} = begin
     h = ScalarField(mesh)
     T = ScalarField(mesh)
@@ -51,44 +51,37 @@ end
     Tf = FaceScalarField(mesh)
     K = ScalarField(mesh)
     dpdt = ScalarField(mesh)
-    update_BC =  return_thingy(EnergyModel, fluid, energy.args.Tref)
+    # update_BC =  return_thingy(EnergyModel, fluid, energy.args.Tref)
     coeffs = energy.args
-    SensibleEnthalpy(h, T, hf, Tf, K, dpdt, update_BC, coeffs)
-end
-
-return_thingy(::Type{SensibleEnthalpy}, fluid, Tref) = begin
-    function Ttoh(T)
-        Cp = fluid.cp
-        h = Cp.values*(T-Tref)
-        return h
-    end
+    # SensibleEnthalpy(h, T, hf, Tf, K, dpdt, update_BC, coeffs)
+    SensibleEnthalpy(h, T, hf, Tf, K, dpdt, coeffs)
 end
 
 """
-    initialise(energy::SensibleEnthalpy, model::Physics{T1,F,M,Tu,E,D,BI}, mdotf, rho, peqn, config
-    ) where {T1,F,M,Tu,E,D,BI})
+    initialise(energy::SensibleEnthalpy, model::Physics{T1,F,SO,M,Tu,E,D,BI}, mdotf, rho, peqn, config
+    ) where {T1,F,SO,M,Tu,E,D,BI})
 
 Initialisation of energy transport equations.
 
-### Input
-- `energy` -- Energy model.
-- `model`  -- Physics model defined by user.
-- `mdtof`  -- Face mass flow.
-- `rho`    -- Density ScalarField.
-- `peqn`   -- Pressure equation.
-- `config` -- Configuration structure defined by user with solvers, schemes, runtime and 
+# Input
+- `energy`: Energy model.
+- `model`: Physics model defined by user.
+- `mdtof`: Face mass flow.
+- `rho`: Density ScalarField.
+- `peqn`: Pressure equation.
+- `config`: Configuration structure defined by user with solvers, schemes, runtime and 
               hardware structures set.
 
-### Output
-- `Sensible_Enthalpy_Model`  -- Energy model struct containing energy equation.
+# Output
+- `SensibleEnthalpyModel`: Energy model struct containing energy equation.
 
 """
 function initialise(
-    energy::SensibleEnthalpy, model::Physics{T1,F,M,Tu,E,D,BI}, mdotf, rho, peqn, config
-    ) where {T1,F,M,Tu,E,D,BI}
+    energy::SensibleEnthalpy, model::Physics{T1,F,SO,M,Tu,E,D,BI}, mdotf, rho, peqn, config
+    ) where {T1,F,SO,M,Tu,E,D,BI}
 
     (; h, T, dpdt) = energy
-    (; solvers, schemes, runtime) = config
+    (; solvers, schemes, runtime, boundaries) = config
     mesh = mdotf.mesh
     eqn = peqn.equation
     
@@ -110,44 +103,49 @@ function initialise(
     ) → eqn
     
     # Set up preconditioners
-    @reset energy_eqn.preconditioner = set_preconditioner(
-                solvers.h.preconditioner, energy_eqn, h.BCs, config)
+    # @reset energy_eqn.preconditioner = set_preconditioner(
+    #             solvers.h.preconditioner, energy_eqn, boundaries.h, config)
+
+    @reset energy_eqn.preconditioner = set_preconditioner(solvers.h.preconditioner, energy_eqn)
     
     # preallocating solvers
-    @reset energy_eqn.solver = solvers.h.solver(_A(energy_eqn), _b(energy_eqn))
+    @reset energy_eqn.solver = _workspace(solvers.h.solver, _b(energy_eqn))
 
-    return Sensible_Enthalpy_Model(energy_eqn)
+    init_residual = (:h, 1.0)
+    init_converged = false
+    state = ModelState(init_residual, init_converged)
+
+    return SensibleEnthalpyModel(energy_eqn, state)
 end
 
 
 """
-    energy::Sensible_Enthalpy_Model{E1}, model::Physics{T1,F,M,Tu,E,D,BI}, prev, mdotf, rho, mueff, time, config
-    ) where {T1,F,M,Tu,E,D,BI,E1}
+    energy::SensibleEnthalpyModel, model::Physics{T1,F,SO,M,Tu,E,D,BI}, prev, mdotf, rho, mueff, time, config
+    ) where {T1,F,SO,M,Tu,E,D,BI,E1}
 
 Run energy transport equations.
 
-### Input
-- `energy` -- Energy model.
-- `model`  -- Physics model defined by user.
-- `prev`   -- Previous energy cell values.
-- `mdtof`  -- Face mass flow.
-- `rho`    -- Density ScalarField.
-- `mueff`  -- Effective viscosity FaceScalarField.
-- `time`   --
-- `config` -- Configuration structure defined by user with solvers, schemes, runtime and 
-              hardware structures set.
+# Input
+- `energy`: Energy model.
+- `model`: Physics model defined by user.
+- `prev`: Previous energy cell values.
+- `mdtof`: Face mass flow.
+- `rho`: Density ScalarField.
+- `mueff`: Effective viscosity FaceScalarField.
+- `time`: Simulation runtime.
+- `config`: Configuration structure defined by user with solvers, schemes, runtime and hardware structures set.
 
 """
 function energy!(
-    energy::Sensible_Enthalpy_Model{E1}, model::Physics{T1,F,M,Tu,E,D,BI}, prev, mdotf, rho, mueff, time, config
-    ) where {T1,F,M,Tu,E,D,BI,E1}
+    energy::SensibleEnthalpyModel, model::Physics{T1,F,SO,M,Tu,E,D,BI}, prev, mdotf, rho, mueff, time, config
+    ) where {T1,F,SO,M,Tu,E,D,BI}
 
     mesh = model.domain
 
     (;U) = model.momentum
     (;h, hf, T, K, dpdt) = model.energy
-    (;energy_eqn) = energy
-    (; solvers, runtime, hardware) = config
+    (;energy_eqn, state) = energy
+    (; solvers, runtime, hardware, boundaries) = config
     (; iterations, write_interval) = runtime
     (; backend) = hardware
 
@@ -166,8 +164,9 @@ function energy!(
     # Pre-allocate auxiliary variables
     TF = _get_float(mesh)
     n_cells = length(mesh.cells)
-    prev = zeros(TF, n_cells)
-    prev = _convert_array!(prev, backend) 
+    # prev = zeros(TF, n_cells)
+    # prev = _convert_array!(prev, backend)
+    prev = KernelAbstractions.zeros(backend, TF, n_cells) 
 
     volumes = getproperty.(mesh.cells, :volume)
 
@@ -175,7 +174,7 @@ function energy!(
 
     @. prev = K.values
     interpolate!(Uf, U, config)
-    correct_boundaries!(Uf, U, U.BCs, time, config)
+    correct_boundaries!(Uf, U, boundaries.U, time, config)
     for i ∈ eachindex(K)
         K.values[i] = 0.5*(U.x.values[i]^2 + U.y.values[i]^2 + U.z.values[i]^2)
     end
@@ -196,24 +195,31 @@ function energy!(
     # Set up and solve energy equation
     @. prev = h.values
     discretise!(energy_eqn, h, config)
-    apply_boundary_conditions!(energy_eqn, h.BCs, nothing, time, config)
+    apply_boundary_conditions!(energy_eqn, boundaries.h, nothing, time, config)
     implicit_relaxation_diagdom!(energy_eqn, h.values, solvers.h.relax, nothing, config)
     update_preconditioner!(energy_eqn.preconditioner, mesh, config)
-    solve_system!(energy_eqn, solvers.h, h, nothing, config)
+    h_res = solve_system!(energy_eqn, solvers.h, h, nothing, config)
 
-    if ~isempty(solvers.h.limit)
+    if !isnothing(solvers.h.limit)
         Tmin = solvers.h.limit[1]; Tmax = solvers.h.limit[2]
         thermoClamp!(model, h, Tmin, Tmax)
     end
 
     htoT!(model, h, T)
     interpolate!(hf, h, config)
-    correct_boundaries!(hf, h, h.BCs, time, config)
+    correct_boundaries!(hf, h, boundaries.h, time, config)
+
+    residuals = (:h, h_res)
+    converged = h_res <= solvers.h.convergence
+    state.residuals = residuals
+    state.converged = converged
+
+    return nothing
 end
 
 
 """
-    thermo_Psi!(model::Physics{T,F,M,Tu,E,D,BI}, Psi::ScalarField) 
+    thermo_Psi!(model::Physics{T,F,SO,M,Tu,E,D,BI}, Psi::ScalarField) 
     where {T,F<:AbstractCompressible,M,Tu,E,D,BI}
 
 Model updates the value of Psi.
@@ -229,8 +235,8 @@ enthalpy, reference temperature and fluid model specified ``C_p`` and ``R`` valu
 ``R`` is calculated from ``C_p`` and ``\\gamma`` specified in the fluid model.
 """
 function thermo_Psi!(
-    model::Physics{T,F,M,Tu,E,D,BI}, Psi::ScalarField
-    ) where {T,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T,F,SO,M,Tu,E,D,BI}, Psi::ScalarField
+    ) where {T,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs, h) = model.energy
     (; Tref) = coeffs
     Cp = model.fluid.cp; R = model.fluid.R
@@ -238,7 +244,7 @@ function thermo_Psi!(
 end
 
 """
-    thermo_Psi!(model::Physics{T,F,M,Tu,E,D,BI}, Psif::FaceScalarField) 
+    thermo_Psi!(model::Physics{T,F,SO,M,Tu,E,D,BI}, Psif::FaceScalarField) 
     where {T,F<:AbstractCompressible,M,Tu,E,D,BI}
 
 Function updates the value of Psi.
@@ -254,18 +260,18 @@ enthalpy, reference temperature and fluid model specified ``C_p`` and ``R`` valu
 ``R`` is calculated from ``C_p`` and ``\\gamma`` specified in the fluid model.
 """
 function thermo_Psi!(
-    model::Physics{T,F,M,Tu,E,D,BI}, Psif::FaceScalarField, config
-    ) where {T,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T,F,SO,M,Tu,E,D,BI}, Psif::FaceScalarField, config
+    ) where {T,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs, hf, h) = model.energy
     interpolate!(hf, h, config)
-    correct_boundaries!(hf, h, h.BCs, time, config)
+    correct_boundaries!(hf, h, config.boundaries.h, time, config)
     (; Tref) = coeffs
     Cp = model.fluid.cp; R = model.fluid.R
     @. Psif.values = Cp.values/(R.values*(hf.values + Cp.values*Tref))
 end
 
 """
-    Ttoh!(model::Physics{T1,F,M,Tu,E,D,BI}, T::ScalarField, h::ScalarField
+    Ttoh!(model::Physics{T1,F,SO,M,Tu,E,D,BI}, T::ScalarField, h::ScalarField
     ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
 
 Function coverts temperature ScalarField to sensible enthalpy ScalarField.
@@ -276,8 +282,8 @@ Function coverts temperature ScalarField to sensible enthalpy ScalarField.
 - `h`      -- Sensible enthalpy ScalarField.
 """
 function Ttoh!(
-    model::Physics{T1,F,M,Tu,E,D,BI}, T::ScalarField, h::ScalarField
-    ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T1,F,SO,M,Tu,E,D,BI}, T::ScalarField, h::ScalarField
+    ) where {T1,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs) = model.energy
     (; Tref) = coeffs
     Cp = model.fluid.cp
@@ -285,7 +291,7 @@ function Ttoh!(
 end
 
 """
-    htoT!(model::Physics{T1,F,M,Tu,E,D,BI}, h::ScalarField, T::ScalarField
+    htoT!(model::Physics{T1,F,SO,M,Tu,E,D,BI}, h::ScalarField, T::ScalarField
     ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
 
 Function coverts sensible enthalpy ScalarField to temperature ScalarField.
@@ -296,8 +302,8 @@ Function coverts sensible enthalpy ScalarField to temperature ScalarField.
 - `T`      -- Temperature ScalarField.
 """
 function htoT!(
-    model::Physics{T1,F,M,Tu,E,D,BI}, h::ScalarField, T::ScalarField
-    ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T1,F,SO,M,Tu,E,D,BI}, h::ScalarField, T::ScalarField
+    ) where {T1,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs) = model.energy
     (; Tref) = coeffs
     Cp = model.fluid.cp
@@ -305,8 +311,8 @@ function htoT!(
 end
 
 function thermoClamp!(
-    model::Physics{T1,F,M,Tu,E,D,BI}, h::ScalarField, Tmin, Tmax
-    ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T1,F,SO,M,Tu,E,D,BI}, h::ScalarField, Tmin, Tmax
+    ) where {T1,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs) = model.energy
     (; Tref) = coeffs
     Cp = model.fluid.cp
@@ -316,8 +322,8 @@ function thermoClamp!(
 end
 
 function thermoClamp!(
-    model::Physics{T1,F,M,Tu,E,D,BI}, hf::FaceScalarField, Tmin, Tmax
-    ) where {T1,F<:AbstractCompressible,M,Tu,E,D,BI}
+    model::Physics{T1,F,SO,M,Tu,E,D,BI}, hf::FaceScalarField, Tmin, Tmax
+    ) where {T1,F<:AbstractCompressible,SO,M,Tu,E,D,BI}
     (; coeffs) = model.energy
     (; Tref) = coeffs
     Cp = model.fluid.cp

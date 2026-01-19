@@ -10,13 +10,13 @@ export KOmega
 kOmega model containing all kOmega field parameters.
 
 ### Fields
-- 'k' -- Turbulent kinetic energy ScalarField.
-- 'omega' -- Specific dissipation rate ScalarField.
-- 'nut' -- Eddy viscosity ScalarField.
-- 'kf' -- Turbulent kinetic energy FaceScalarField.
-- 'omegaf' -- Specific dissipation rate FaceScalarField.
-- 'nutf' -- Eddy viscosity FaceScalarField.
-- 'coeffs' -- Model coefficients.
+- `k` -- Turbulent kinetic energy ScalarField.
+- `omega` -- Specific dissipation rate ScalarField.
+- `nut` -- Eddy viscosity ScalarField.
+- `kf` -- Turbulent kinetic energy FaceScalarField.
+- `omegaf` -- Specific dissipation rate FaceScalarField.
+- `nutf` -- Eddy viscosity FaceScalarField.
+- `coeffs` -- Model coefficients.
 
 """
 struct KOmega{S1,S2,S3,F1,F2,F3,C} <: AbstractRANSModel
@@ -30,9 +30,11 @@ struct KOmega{S1,S2,S3,F1,F2,F3,C} <: AbstractRANSModel
 end
 Adapt.@adapt_structure KOmega
 
-struct KOmegaModel{E1,E2}
+struct KOmegaModel{T,E1,E2,S1} 
+    turbulence::T
     k_eqn::E1 
     ω_eqn::E2
+    state::S1
 end
 Adapt.@adapt_structure KOmegaModel
 
@@ -57,8 +59,8 @@ end
 
 # Model initialisation
 """
-    initialise(turbulence::KOmega, model::Physics{T,F,M,Tu,E,D,BI}, mdotf, peqn, config
-    ) where {T,F,M,Tu,E,D,BI}
+    initialise(turbulence::KOmega, model::Physics{T,F,SO,M,Tu,E,D,BI}, mdotf, peqn, config
+    ) where {T,F,SO,M,Tu,E,D,BI}
 
 Initialisation of turbulent transport equations.
 
@@ -71,16 +73,21 @@ Initialisation of turbulent transport equations.
           hardware structures set.
 
 ### Output
-- `KOmegaModel(k_eqn, ω_eqn)`  -- Turbulence model structure.
+- `KOmegaModel(
+        turbulence,
+        k_eqn, 
+        ω_eqn,
+        state
+        )`  -- Turbulence model structure.
 
 """
 function initialise(
-    turbulence::KOmega, model::Physics{T,F,M,Tu,E,D,BI}, mdotf, peqn, config
-    ) where {T,F,M,Tu,E,D,BI}
+    turbulence::KOmega, model::Physics{T,F,SO,M,Tu,E,D,BI}, mdotf, peqn, config
+    ) where {T,F,SO,M,Tu,E,D,BI}
 
     (; k, omega, nut) = turbulence
     (; rho) = model.fluid
-    (; solvers, schemes, runtime) = config
+    (; solvers, schemes, runtime, boundaries) = config
     mesh = mdotf.mesh
     eqn = peqn.equation
 
@@ -111,33 +118,33 @@ function initialise(
     ) → eqn
 
     # Set up preconditioners
-    @reset k_eqn.preconditioner = set_preconditioner(
-                solvers.k.preconditioner, k_eqn, k.BCs, config)
+    # @reset k_eqn.preconditioner = set_preconditioner(
+    #             solvers.k.preconditioner, k_eqn, boundaries.k, config)
 
-    # @reset ω_eqn.preconditioner = set_preconditioner(
-    #             solvers.omega.preconditioner, ω_eqn, omega.BCs, config)
-
+    @reset k_eqn.preconditioner = set_preconditioner(solvers.k.preconditioner, k_eqn)
     @reset ω_eqn.preconditioner = k_eqn.preconditioner
     
     # preallocating solvers
-    @reset k_eqn.solver = solvers.k.solver(_A(k_eqn), _b(k_eqn))
-    @reset ω_eqn.solver = solvers.omega.solver(_A(ω_eqn), _b(ω_eqn))
+    @reset k_eqn.solver = _workspace(solvers.k.solver, _b(k_eqn))
+    @reset ω_eqn.solver = _workspace(solvers.omega.solver, _b(ω_eqn))
 
-    return KOmegaModel(k_eqn, ω_eqn)
+    initial_residual = ((:k, 1.0),(:omega, 1.0))
+    return KOmegaModel(
+        turbulence, k_eqn, ω_eqn, ModelState(initial_residual, false)
+        ), config
 end
 
 # Model solver call (implementation)
 """
-    turbulence!(rans::KOmegaModel{E1,E2}, model::Physics{T,F,M,Tu,E,D,BI}, S, S2, prev, time, config
-    ) where {T,F,M,Tu<:KOmega,E,D,BI,E1,E2}
+    turbulence!(rans::KOmegaModel, model::Physics{T,F,SO,M,Tu,E,D,BI}, S, prev, time, config
+    ) where {T,F,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
 
 Run turbulence model transport equations.
 
 ### Input
-- `rans::KOmegaModel{E1,E2}` -- KOmega turbulence model.
+- `rans::KOmegaModel` -- KOmega turbulence model.
 - `model`  -- Physics model defined by user.
 - `S`   -- Strain rate tensor.
-- `S2`  -- Square of the strain rate magnitude.
 - `prev`  -- Previous field.
 - `time`   -- 
 - `config` -- Configuration structure defined by user with solvers, schemes, runtime and 
@@ -145,15 +152,16 @@ Run turbulence model transport equations.
 
 """
 function turbulence!(
-    rans::KOmegaModel{E1,E2}, model::Physics{T,F,M,Tu,E,D,BI}, S, S2, prev, time, config
-    ) where {T,F,M,Tu<:KOmega,E,D,BI,E1,E2}
+    rans::KOmegaModel, model::Physics{T,F,SO,M,Tu,E,D,BI}, S, prev, time, config
+    ) where {T,F,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
 
     mesh = model.domain
     
     (; rho, rhof, nu, nuf) = model.fluid
-    (;k, omega, nut, kf, omegaf, nutf, coeffs) = model.turbulence
-    (;k_eqn, ω_eqn) = rans
-    (; solvers, runtime) = config
+    (;k, omega, nut, kf, omegaf, nutf, coeffs) = rans.turbulence
+    (; U, Uf, gradU) = S
+    (;k_eqn, ω_eqn, state) = rans
+    (; solvers, runtime, boundaries) = config
 
     mueffk = get_flux(k_eqn, 3)
     Dkf = get_flux(k_eqn, 4)
@@ -164,11 +172,17 @@ function turbulence!(
     Pω = get_source(ω_eqn, 1)
 
     # update fluxes and sources
+
+    # TO-DO: Need to bring gradient calculation inside turbulence models!!!!!
+
+    grad!(gradU, Uf, U, boundaries.U, time, config)
+    limit_gradient!(config.schemes.U.limiter, gradU, U, config)
     magnitude2!(Pk, S, config, scale_factor=2.0) # multiplied by 2 (def of Sij)
-    constrain_boundary!(omega, omega.BCs, model, config) # active with WFs only
-    correct_production!(Pk, k.BCs, model, S.gradU, config)
+    # constrain_boundary!(omega, boundaries.omega, model, config) # active with WFs only
+    
     @. Pω.values = rho.values*coeffs.α1*Pk.values
     @. Pk.values = rho.values*nut.values*Pk.values
+    correct_production!(Pk, boundaries.k, model, S.gradU, config) # Must be after previous line
     @. Dωf.values = rho.values*coeffs.β1*omega.values
     @. mueffω.values = rhof.values * (nuf.values + coeffs.σω*nutf.values)
     @. Dkf.values = rho.values*coeffs.β⁺*omega.values
@@ -177,38 +191,42 @@ function turbulence!(
     # Solve omega equation
     # prev .= omega.values
     discretise!(ω_eqn, omega, config)
-    apply_boundary_conditions!(ω_eqn, omega.BCs, nothing, time, config)
-    constrain_equation!(ω_eqn, omega.BCs, model, config) # active with WFs only
+    apply_boundary_conditions!(ω_eqn, boundaries.omega, nothing, time, config)
     # implicit_relaxation!(ω_eqn, omega.values, solvers.omega.relax, nothing, config)
     implicit_relaxation_diagdom!(ω_eqn, omega.values, solvers.omega.relax, nothing, config)
+    constrain_equation!(ω_eqn, boundaries.omega, model, config) # active with WFs only
     update_preconditioner!(ω_eqn.preconditioner, mesh, config)
-    solve_system!(ω_eqn, solvers.omega, omega, nothing, config)
+    ω_res = solve_system!(ω_eqn, solvers.omega, omega, nothing, config)
     
-    constrain_boundary!(omega, omega.BCs, model, config) # active with WFs only
+    # constrain_boundary!(omega, boundaries.omega, model, config) # active with WFs only
     bound!(omega, config)
     # explicit_relaxation!(omega, prev, solvers.omega.relax, config)
 
     # Solve k equation
     # prev .= k.values
     discretise!(k_eqn, k, config)
-    apply_boundary_conditions!(k_eqn, k.BCs, nothing, time, config)
+    apply_boundary_conditions!(k_eqn, boundaries.k, nothing, time, config)
     # implicit_relaxation!(k_eqn, k.values, solvers.k.relax, nothing, config)
     implicit_relaxation_diagdom!(k_eqn, k.values, solvers.k.relax, nothing, config)
     update_preconditioner!(k_eqn.preconditioner, mesh, config)
-    solve_system!(k_eqn, solvers.k, k, nothing, config)
+    k_res = solve_system!(k_eqn, solvers.k, k, nothing, config)
     bound!(k, config)
     # explicit_relaxation!(k, prev, solvers.k.relax, config)
 
     @. nut.values = k.values/omega.values
 
     interpolate!(nutf, nut, config)
-    correct_boundaries!(nutf, nut, nut.BCs, time, config)
-    correct_eddy_viscosity!(nutf, nut.BCs, model, config)
+    correct_boundaries!(nutf, nut, boundaries.nut, time, config)
+    correct_eddy_viscosity!(nutf, boundaries.nut, model, config)
+
+    state.residuals = ((:k , k_res),(:omega, ω_res))
+    state.converged = k_res < solvers.k.convergence && ω_res < solvers.omega.convergence
+    return nothing
 end
 
 # Specialise VTK writer
-function model2vtk(model::Physics{T,F,M,Tu,E,D,BI}, VTKWriter, name
-    ) where {T,F,M,Tu<:KOmega,E,D,BI}
+function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
+    ) where {T,F,SO,M,Tu<:KOmega,E,D,BI}
     if typeof(model.fluid)<:AbstractCompressible
         args = (
             ("U", model.momentum.U), 
@@ -227,5 +245,5 @@ function model2vtk(model::Physics{T,F,M,Tu,E,D,BI}, VTKWriter, name
             ("nut", model.turbulence.nut)
         )
     end
-    write_vtk(name, model.domain, VTKWriter, args...)
+    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
 end

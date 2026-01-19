@@ -24,11 +24,29 @@ end
 @inline function scheme!(
     term::Operator{F,P,I,Time{Euler}}, 
     nzval_array, cell, face,  cellN, ns, cIndex, nIndex, fID, prev, runtime)  where {F,P,I}
-    # nothing
+
     0.0, 0.0 # add types if this approach works
 end
 @inline scheme_source!(
     term::Operator{F,P,I,Time{Euler}}, cell, cID, cIndex, prev, runtime)  where {F,P,I} = begin
+        volume = cell.volume
+        vol_rdt = volume/runtime.dt
+        
+        # Increment sparse and b arrays 
+        ac = vol_rdt
+        b = prev[cID]*vol_rdt
+        return ac, b
+end
+
+## Crank-Nicholson
+@inline function scheme!(
+    term::Operator{F,P,I,Time{CrankNicolson}}, 
+    nzval_array, cell, face,  cellN, ns, cIndex, nIndex, fID, prev, runtime)  where {F,P,I}
+
+    0.0, 0.0 # add types if this approach works
+end
+@inline scheme_source!(
+    term::Operator{F,P,I,Time{CrankNicolson}}, cell, cID, cIndex, prev, runtime)  where {F,P,I} = begin
         volume = cell.volume
         vol_rdt = volume/runtime.dt
         
@@ -45,14 +63,22 @@ end
     nzval_array, cell, face,  cellN, ns, cIndex, nIndex, fID, prev, runtime
     )  where {F,P,I}
 
+    
     (; area, normal, delta, e) = face
-    Sf = ns*area*normal
-    e = ns*e
-    Ef = ((Sf⋅Sf)/(Sf⋅e))*e
-    Ef_mag = norm(Ef)
-    ap = term.sign*(term.flux[fID] * Ef_mag)/delta
+    ## Potential simplified form for performance, needs checking before use in release
+    # dPN = cellN.centre - cell.centre
+    # n = ns*normal
+    # Ef = dPN*(norm(n)^2/(dPN⋅n))*area # this works 
+    # Ef = dPN*(one(typeof(ns))/(dPN⋅n))*area # a little faster but a few more iter
 
-    # ap = term.sign*(term.flux[fID] * area)/delta
+    # Use form below to ensure correctness, could be simplified for performance
+    Sf = ns*area*normal # original
+    e = ns*e # original
+    Ef = ((Sf⋅Sf)/(Sf⋅e))*e # original
+    Ef_mag = norm(Ef)
+    ap = term.sign*(term.flux[fID]*Ef_mag)/delta
+
+    # ap = term.sign*(term.flux[fID]*area)/delta # Initial form used
     
     # Increment sparse array
     ac = -ap
@@ -72,18 +98,24 @@ end
     nzval_array, cell, face, cellN, ns, cIndex, nIndex, fID, prev, runtime
     )  where {F,P,I}
     # Retrieve mesh centre values
-    xf = face.centre
-    xC = cell.centre
-    xN = cellN.centre
+    f = face.centre
+    C = cell.centre
+    N = cellN.centre
+
+    # calculate distance vectors
+    d_fC = C - f 
+    d_fN = N - f
     
     # Calculate weights using normal functions
-    weight = norm(xf - xC)/norm(xN - xC)
+    weight = norm(d_fN)/(norm(d_fC) + norm(d_fN))
     one_minus_weight = one(eltype(weight)) - weight
 
     # Calculate required increment
     ap = term.sign*(term.flux[fID]*ns)
-    ac = ap*one_minus_weight
-    an = ap*weight
+    # ac = ap*one_minus_weight
+    # an = ap*weight
+    ac = ap*weight
+    an = ap*one_minus_weight
     return ac, an
 end
 @inline scheme_source!(
@@ -113,18 +145,24 @@ end
     nzval_array, cell, face, cellN, ns, cIndex, nIndex, fID, prev, runtime
     )  where {F,P,I}
     # Retrieve mesh centre values
-    xf = face.centre
-    xC = cell.centre
-    xN = cellN.centre
+    f = face.centre
+    C = cell.centre
+    N = cellN.centre
+
+    # calculate distance vectors
+    d_fC = C - f 
+    d_fN = N - f
     
     # Calculate weights using normal functions
-    weight = norm(xf - xC)/norm(xN - xC)
+    weight = norm(d_fN)/(norm(d_fC) + norm(d_fN))
     one_minus_weight = one(eltype(weight)) - weight
 
     # Calculate coefficients
     ap = term.sign*(term.flux[fID]*ns)
-    acLinear = ap*one_minus_weight
-    anLinear = ap*weight
+    # acLinear = ap*one_minus_weight
+    # anLinear = ap*weight
+    acLinear = ap*weight 
+    anLinear = ap*one_minus_weight
     acUpwind = max(ap, 0.0) 
     anUpwind = -max(-ap, 0.0)
     ac = 0.75*acLinear + 0.25*acUpwind

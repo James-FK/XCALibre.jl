@@ -20,7 +20,7 @@ add Plots, Distributions, LinearAlgebra, GaussianProcesses, BayesianOptimization
 
 This will download and install the required packages. Note that "CUDA" must also be added for GPU acceleration. Once installed, the packages can be loaded as follows:
 
-```@example optimisation
+```julia
 using Pkg; # hide
 installed = "Flux" ∈ keys(Pkg.project().dependencies) # hide
 installed && Pkg.rm("Flux", io=devnull) #hide
@@ -37,7 +37,7 @@ nothing # hide
 
 In order to calculate the lift-to-drag ratio, the pressure and viscous forces over the aerofoil must be calculated and summed. The lift and drag components can then be calculated (noting the rotated inflow vector to allow for different aerofoil angles of attack with the same mesh). A function returning the coefficients of lift and drag (not specifically needed for this example) is also presented for convenience.
 
-```@example optimisation
+```julia
 # Lift to drag ratio calculation
 lift_to_drag(patch::Symbol, model, ρ, nu, α) = begin
     Fp = pressure_force(patch, model.momentum.p, ρ)
@@ -67,7 +67,7 @@ end
 
 Next, the aerofoil mesh .unv file must be imported. It must also be adapted to work with the GPU, if desired.
 
-```@example optimisation
+```julia
 grids_dir = pkgdir(XCALibre, "examples/0_GRIDS")
 grid = "NACAMesh.unv"
 mesh_file = joinpath(grids_dir, grid)
@@ -81,7 +81,7 @@ mesh_dev = mesh # running on CPU
 
 The `BayesianOptimization.jl` package can optimise a Julia function that is passed to it. To interface with XCALibre.jl, the entire CFD simulation setup must simply be wrapped within a function, which can then be passed to the optimiser. The function must take the variable to be changed (angle of attack, in this case) as its input, and must return the desired output (lift-to-drag ratio). Therefore, the post-processing step to calculate lift-to-drag ratio is also wrapped in the same function.
 
-```@example optimisation
+```julia
 function foil_optim(α::Vector{Float64})
     println("\nSelected α value: $(α[1])")
 
@@ -107,81 +107,82 @@ function foil_optim(α::Vector{Float64})
         domain = mesh_dev
         )
 
-    @assign! model momentum U ( 
-        XCALibre.Dirichlet(:inlet, velocity),
-        XCALibre.Dirichlet(:bottom, velocity),
-        Neumann(:outlet, 0.0),
-        Neumann(:top, 0.0),
-        Wall(:foil, noSlip)
-    )
-
-    @assign! model momentum p (
-        Neumann(:inlet, 0.0),
-        Neumann(:bottom, 0.0),
-        XCALibre.Dirichlet(:outlet, 0.0),
-        XCALibre.Dirichlet(:top, 0.0),
-        Neumann(:foil, 0.0)
-    )
-
-    @assign! model turbulence k (
-        XCALibre.Dirichlet(:inlet, k_inlet),
-        Neumann(:outlet, 0.0),
-        Neumann(:top, 0.0),
-        Neumann(:bottom, 0.0),
-        XCALibre.Dirichlet(:foil, 1e-15)
-    )
-
-    @assign! model turbulence omega (
-        XCALibre.Dirichlet(:inlet, ω_inlet),
-        Neumann(:outlet, 0.0),
-        Neumann(:top, 0.0),
-        Neumann(:bottom, 0.0),
-        OmegaWallFunction(:foil)
-    )
-
-    @assign! model turbulence nut (
-        Neumann(:inlet, 0.0),
-        Neumann(:outlet, 0.0),
-        Neumann(:top, 0.0),
-        Neumann(:bottom, 0.0), 
-        XCALibre.Dirichlet(:foil, 0.0)
+    BCs = assign(
+        region=mesh_dev,
+        (
+            U = [
+                XCALibre.Dirichlet(:inlet, velocity),
+                XCALibre.Dirichlet(:bottom, velocity),
+                Extrapolated(:outlet, 0.0),
+                Extrapolated(:top, 0.0),
+                Wall(:foil, noSlip)
+            ],
+            p = [
+                Extrapolated(:inlet, 0.0),
+                Extrapolated(:bottom, 0.0),
+                XCALibre.Dirichlet(:outlet, 0.0),
+                XCALibre.Dirichlet(:top, 0.0),
+                Extrapolated(:foil, 0.0)
+            ],
+            k = [
+                XCALibre.Dirichlet(:inlet, k_inlet),
+                Extrapolated(:outlet, 0.0),
+                Extrapolated(:top, 0.0),
+                Extrapolated(:bottom, 0.0),
+                XCALibre.Dirichlet(:foil, 1e-15)
+            ],
+            omega = [
+                XCALibre.Dirichlet(:inlet, ω_inlet),
+                Extrapolated(:outlet, 0.0),
+                Extrapolated(:top, 0.0),
+                Extrapolated(:bottom, 0.0),
+                OmegaWallFunction(:foil)
+            ],
+            nut = [
+                Extrapolated(:inlet, 0.0),
+                Extrapolated(:outlet, 0.0),
+                Extrapolated(:top, 0.0),
+                Extrapolated(:bottom, 0.0), 
+                XCALibre.Dirichlet(:foil, 0.0)
+            ]
+        )
     )
 
     schemes = (
-        U = set_schemes(divergence=Upwind, gradient=Midpoint),
-        p = set_schemes(divergence=Upwind),
-        k = set_schemes(divergence=Upwind, gradient=Midpoint),
-        omega = set_schemes(divergence=Upwind, gradient=Midpoint)
+        U = Schemes(divergence=Upwind, gradient=Midpoint),
+        p = Schemes(divergence=Upwind),
+        k = Schemes(divergence=Upwind, gradient=Midpoint),
+        omega = Schemes(divergence=Upwind, gradient=Midpoint)
     )
 
     solvers = (
-        U = set_solver(
-            model.momentum.U;
-            solver = BicgstabSolver, # BicgstabSolver, GmresSolver
+        U = SolverSetup(
+            region = mesh_dev,
+            solver = Bicgstab(), # Bicgstab(), Gmres()
             preconditioner = Jacobi(), # Jacobi
             convergence = 1e-7,
             relax = 0.6,
             rtol = 1e-1,
         ),
-        p = set_solver(
-            model.momentum.p;
-            solver = GmresSolver, # change to BicgstabSolver for GPU runs
+        p = SolverSetup(
+            region = mesh_dev,
+            solver = Gmres(), # change to Bicgstab() for GPU runs
             preconditioner = Jacobi(), # change to Jacobi() for GPU runs
             convergence = 1e-7,
             relax = 0.2,
             rtol = 1e-2,
         ),
-        k = set_solver(
-            model.turbulence.k;
-            solver = BicgstabSolver,
+        k = SolverSetup(
+            region = mesh_dev,
+            solver = Bicgstab(),
             preconditioner = Jacobi(),
             convergence = 1e-7,
             relax = 0.6,
             rtol = 1e-1,
         ),
-        omega = set_solver(
-            model.turbulence.omega;
-            solver      = BicgstabSolver,
+        omega = SolverSetup(
+            region = mesh_dev,
+            solver      = Bicgstab(),
             preconditioner = Jacobi(), 
             convergence = 1e-7,
             relax       = 0.6,
@@ -189,13 +190,13 @@ function foil_optim(α::Vector{Float64})
         )
     )
 
-    runtime = set_runtime(iterations=500, write_interval=500, time_step=1)
-    runtime = set_runtime(iterations=20, write_interval=-1, time_step=1) # hide
+    runtime = Runtime(iterations=500, write_interval=500, time_step=1)
+    runtime = Runtime(iterations=20, write_interval=-1, time_step=1) # hide
 
-    hardware = set_hardware(backend=CPU(), workgroup=1024)
-    # hardware = set_hardware(backend=CUDABackend(), workgroup=32) # uncomment to run on GPU
+    hardware = Hardware(backend=CPU(), workgroup=1024)
+    # hardware = Hardware(backend=CUDABackend(), workgroup=32) # uncomment to run on GPU
 
-    config = Configuration(solvers=solvers, schemes=schemes, runtime=runtime, hardware=hardware)
+    config = Configuration(solvers=solvers, schemes=schemes, runtime=runtime, hardware=hardware, boundaries=BCs)
 
     GC.gc()
 
@@ -237,7 +238,7 @@ Note that this code saves a single .vtk file of the last CFD iteration each time
 
 Finally, the Bayesian optimiser must be configured before the optimisation can be performed. This example follows the BayesianOptimization.jl default configuration for the Gaussian process surrogate model, limiting input dimensions to 1 (the angle of attack). The surrogate model is then set to be optimised every 10 iterations. The inputs are limited to between 0 and 15 degrees. The problem is configured as a maximisation problem, with an initial sample period of 10 iterations and 50 maximum allowed iterations. The final line of the following code block is then run to perform the optimisation.
 
-```@example optimisation
+```julia
 # Bayesian Optimisation (using BayesianOptimization.jl)
 isdir("vtk_results") || mkdir("vtk_results")
 

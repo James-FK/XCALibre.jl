@@ -7,16 +7,15 @@ using Statistics
 using Krylov
 using LinearOperators
 using ProgressMeter
-using Printf
-# using CUDA
 using KernelAbstractions
+import AcceleratedKernels as AK
 using Atomix
 using Adapt
 
 using LinearAlgebra
 using SparseMatricesCSR
-# using ThreadedSparseCSR
 
+using XCALibre.Multithread
 using XCALibre.Mesh
 using XCALibre.Fields
 using XCALibre.ModelFramework
@@ -24,10 +23,12 @@ using XCALibre.Discretise
 using XCALibre.Solve
 using XCALibre.Calculate
 using XCALibre.ModelPhysics
-using XCALibre.VTK
+using XCALibre.IOFormats
+using XCALibre.Postprocess
 
 include("Solvers_0_functions.jl")
 include("Solvers_1_SIMPLE.jl")
+include("Solvers_1_LAPLACE.jl")
 include("Solvers_1_CSIMPLE.jl")
 include("Solvers_2_PISO.jl")
 include("Solvers_2_CPISO.jl")

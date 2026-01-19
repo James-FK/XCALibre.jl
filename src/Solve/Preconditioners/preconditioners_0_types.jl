@@ -1,5 +1,5 @@
 
-export PreconditionerType
+export Preconditioner, PreconditionerType
 export Jacobi, NormDiagonal #, ILU0 # , LDL
 export DILU, DILUprecon
 export IC0GPU, ILU0GPU
@@ -20,13 +20,13 @@ Adapt.@adapt_structure Jacobi
 # struct ILU0 <: MULPreconditioner end
 # Adapt.@adapt_structure ILU0
 
-struct DILU <: MULPreconditioner end
+struct DILU <: LDIVPreconditioner end
 Adapt.@adapt_structure DILU
 
-struct IC0GPU <: LDIVPreconditioner end
+struct IC0GPU <: MULPreconditioner end
 Adapt.@adapt_structure IC0GPU
 
-struct ILU0GPU <: LDIVPreconditioner end
+struct ILU0GPU <: MULPreconditioner end
 Adapt.@adapt_structure ILU0GPU
 
 struct Preconditioner{T,M,P,S}
@@ -50,26 +50,6 @@ Preconditioner{NormDiagonal}(A::AbstractSparseArray{F,I}) where {F,I} = begin
     S = _convert_array!(zeros(m), backend)
     P = opDiagonal(S)
     Preconditioner{NormDiagonal,typeof(A),typeof(P),typeof(S)}(A,P,S)
-end
-
-Preconditioner{IC0GPU}(A::AbstractSparseArray{F,I}) where {F,I} = begin
-    backend = get_backend(A)
-    m, n = size(A)
-    m == n || throw("Matrix not square")
-    # S = _convert_array!(zeros(m), backend)
-    S = zero(I)
-    P = KP.kp_ic0(A)
-    Preconditioner{IC0GPU,typeof(A),typeof(P),typeof(S)}(A,P,S)
-end
-
-Preconditioner{ILU0GPU}(A::AbstractSparseArray{F,I}) where {F,I} = begin
-    backend = get_backend(A)
-    m, n = size(A)
-    m == n || throw("Matrix not square")
-    # S = _convert_array!(zeros(m), backend)
-    S = zero(I)
-    P = KP.kp_ic0(A)
-    Preconditioner{ILU0GPU,typeof(A),typeof(P),typeof(S)}(A,P,S)
 end
 
 Preconditioner{Jacobi}(A::AbstractSparseArray{F,I}) where {F,I} = begin
@@ -103,25 +83,21 @@ end
 #     Preconditioner{ILU0,typeof(A),typeof(P),typeof(S)}(A,P,S)
 # end
 
-struct DILUprecon{M,V,VI,VUR}
+struct DILUprecon{M,V,VI}
     A::M
     D::V
     Di::VI
-    Ri::VI
-    J::VI
-    upper_indices_IDs::VUR
 end
 Adapt.@adapt_structure DILUprecon
-Preconditioner{DILU}(A::AbstractSparseArray{F,I}) where {F,I} = begin
+
+Preconditioner{DILU}(A::SparseXCSR{N,F,I}) where {N,F,I} = begin
     m, n = size(A)
     m == n || throw("Matrix not square")
+    Acsr = parent(A)
     D = zeros(F, m)
     Di = zeros(I, m)
-    diagonal_indices!(Di, A)
-    @time Ri, J, upper_indices_IDs = upper_row_indices(A, Di)
-    S = DILUprecon(A, D, Di, Ri, J, upper_indices_IDs)
-    P  = LinearOperator(
-        F, m, n, false, false, (y, v) -> ldiv!(y, S, v)
-        )
-    Preconditioner{DILU,typeof(A),typeof(P),typeof(S)}(A,P,S)
+    diagonal_indices!(Di, Acsr)
+    S = DILUprecon(Acsr, D, Di)
+    P = S
+    Preconditioner{DILU,typeof(Acsr),typeof(P),typeof(S)}(Acsr,P,S)
 end

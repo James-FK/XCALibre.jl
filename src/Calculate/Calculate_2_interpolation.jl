@@ -1,5 +1,6 @@
-export correct_boundaries!
+# export correct_boundaries!
 export interpolate!
+export interpolate_harmonic!
 
 # Temporary functions to extract boundary array
 function to_cpu(boundaries::AbstractArray)
@@ -16,30 +17,24 @@ end
 
 # Function to correct interpolation at boundaries (expands loop to reduce allocations)
 
-@generated function correct_boundaries!(phif, phi, BCs, time, config)
-    unpacked_BCs = []
-    for i ∈ 1:length(BCs.parameters)
-        unpack = quote
-            #KERNEL LAUNCH
-            adjust_boundary!(b_cpu, BCs[$i], phif, phi, boundaries, boundary_cellsID, time, backend, workgroup)
-        end
-        push!(unpacked_BCs, unpack)
-    end
-    quote
-    (; mesh) = phif
-    (; boundary_cellsID, boundaries) = mesh 
-    (; hardware) = config
-    (; backend, workgroup) = hardware
-    # b_cpu = Array{eltype(boundaries)}(undef, length(boundaries))
-    # copyto!(b_cpu, boundaries)
-    b_cpu = to_cpu(boundaries)
 
-    # backend = _get_backend(mesh)
-    $(unpacked_BCs...) 
-    # Added below for testing
-    KernelAbstractions.synchronize(backend)
-    end
-end
+# @generated function correct_boundaries!(phif, phi, BCs, time, config)
+#     unpacked_BCs = []
+#     for i ∈ 1:length(BCs.parameters)
+#         unpack = quote
+#             #KERNEL LAUNCH
+#             adjust_boundary!(BCs[$i], phif, phi, boundaries, boundary_cellsID, time, backend, workgroup)
+#         end
+#         push!(unpacked_BCs, unpack)
+#     end
+#     quote
+#     (; mesh) = phif
+#     (; boundary_cellsID, boundaries) = mesh 
+#     (; hardware) = config
+#     (; backend, workgroup) = hardware
+#     $(unpacked_BCs...) 
+#     end
+# end
 
 ## SCALAR INTERPOLATION
 
@@ -50,36 +45,84 @@ function interpolate!(phif::FaceScalarField, phi::ScalarField, config)
 
     # Extract faces from mesh
     mesh = phif.mesh
-    faces = mesh.faces
+    (; cells, faces) = mesh
 
     # Launch interpolate kernel
-    # backend = _get_backend(mesh)
     (; hardware) = config
     (; backend, workgroup) = hardware
-    kernel! = interpolate_Scalar!(backend, workgroup)
-    kernel!(fvals, vals, faces, ndrange = length(faces))
-    KernelAbstractions.synchronize(backend)
+    ndrange = length(faces)
+    kernel! = interpolate_Scalar!(_setup(backend, workgroup, ndrange)...)
+    kernel!(fvals, vals, cells, faces)
+    # # KernelAbstractions.synchronize(backend)
 end
 
-@kernel function interpolate_Scalar!(fvals, vals, faces)
+@kernel function interpolate_Scalar!(fvals, vals, cells, faces)
     # Define index for thread
     i = @index(Global)
 
     @inbounds begin
         # Deconstruct faces to use weight and ownerCells in calculations
-        (; weight, ownerCells) = faces[i]
+        face = faces[i]
+        (; weight, ownerCells, normal) = face
+        F = face.centre
 
         # Calculate initial values based on index queried from ownerCells
-        phi1 = vals[ownerCells[1]]
-        phi2 = vals[ownerCells[2]]
+        owner1 = ownerCells[1]
+        owner2 = ownerCells[2]
+        phi1 = vals[owner1]
+        phi2 = vals[owner2]
 
-        # Calculate one minus weight
-        one_minus_weight = 1 - weight
-
-        # Update phif values array for interpolation
+        one_minus_weight = 1.0 - weight
         fvals[i] = weight*phi1 + one_minus_weight*phi2 # check weight is used correctly!
     end
 end
+
+
+
+## HARMONIC SCALAR INTERPOLATION
+
+function interpolate_harmonic!(phif::FaceScalarField, phi::ScalarField, config)
+    # Extract values arrays from scalar fields 
+    vals = phi.values
+    fvals = phif.values
+
+    # Extract faces from mesh
+    mesh = phif.mesh
+    (; cells, faces) = mesh
+
+    # Launch interpolate kernel
+    (; hardware) = config
+    (; backend, workgroup) = hardware
+    ndrange = length(faces)
+    kernel! = interpolate_harmonic_Scalar!(_setup(backend, workgroup, ndrange)...)
+    kernel!(fvals, vals, cells, faces)
+    # # KernelAbstractions.synchronize(backend)
+end
+
+@kernel function interpolate_harmonic_Scalar!(fvals, vals, cells, faces)
+    # Define index for thread
+    i = @index(Global)
+
+    @inbounds begin
+        # Deconstruct faces to use weight and ownerCells in calculations
+        face = faces[i]
+        (; weight, ownerCells, normal) = face
+        F = face.centre
+
+        # Calculate initial values based on index queried from ownerCells
+        owner1 = ownerCells[1]
+        owner2 = ownerCells[2]
+        phi1 = vals[owner1]
+        phi2 = vals[owner2]
+
+        # one_minus_weight = 1.0 - weight
+        
+        fvals[i] = 2*((phi1*phi2)/(phi1+phi2))
+    end
+end
+
+
+
 
 # VECTOR INTERPOLATION
 function interpolate!(psif::FaceVectorField, psi::VectorField, config)
@@ -103,9 +146,10 @@ function interpolate!(psif::FaceVectorField, psi::VectorField, config)
     # backend = _get_backend(mesh)
     (; hardware) = config
     (; backend, workgroup) = hardware
-    kernel! = interpolate_Vector!(backend, workgroup)
-    kernel!(xv, yv, zv, xf, yf, zf, faces, ndrange = length(faces))
-    KernelAbstractions.synchronize(backend)
+    ndrange = length(faces)
+    kernel! = interpolate_Vector!(_setup(backend, workgroup, ndrange)...)
+    kernel!(xv, yv, zv, xf, yf, zf, faces)
+    # # KernelAbstractions.synchronize(backend)
 end
 
 @kernel function interpolate_Vector!(@Const(xv), @Const(yv), @Const(zv), xf, yf, zf, @Const(faces))
@@ -124,7 +168,7 @@ end
         z1 = zv[cID1]; z2 = zv[cID2]
 
         # Calculate one minus weight
-        one_minus_weight = 1 - weight
+        one_minus_weight = 1.0 - weight
 
         # Update psif x and y arrays for interpolation (IMPLEMENT 3D)
         xf[i] = weight*x1 + one_minus_weight*x2 # check weight is used correctly!
@@ -152,7 +196,7 @@ function interpolate!(
         grad2 = grad(cID2)
         # get weight for current scheme
         w, df = weight(get_scheme(grad), cells, faces, fID)
-        one_minus_weight = 1 - w
+        one_minus_weight = 1.0 - w
         # calculate interpolated value
         grad_ave = w*grad1 + one_minus_weight*grad2
         # correct interpolation
