@@ -107,10 +107,8 @@ function turbulence!(
     ) where {T,F,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
 
     mesh = model.domain
-    scalar = ScalarFloat(mesh)
     squaredgradU = TensorField(mesh)
     symmetricUSquare = TensorField(mesh)
-    squaredgradU = TensorField(mesh)
     (; boundaries, hardware) = config
     (; backend, workgroup) = hardware
     (; nut, nutf, coeffs) = les.turbulence
@@ -157,3 +155,4 @@ function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration
     )
     write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
 end
+
