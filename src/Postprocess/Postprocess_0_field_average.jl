@@ -63,12 +63,12 @@ function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iteratio
     return nothing 
 end
 
-function runtime_postprocessing!(avg::Vector,iter::Integer,n_iterations::Integer,config,Str)
-    runtime_postprocessing!.(avg,Ref(iter),Ref(n_iterations),Ref(config),Ref(Str))
+function runtime_postprocessing!(avg::Vector,iter::Integer,n_iterations::Integer,config,Str,model)
+    runtime_postprocessing!.(avg,Ref(iter),Ref(n_iterations),Ref(config),Ref(Str),Ref(model))
     return nothing
 end
 
-runtime_postprocessing!(::Nothing,::Integer,::Integer,config,S) = ()
+runtime_postprocessing!(::Nothing,::Integer,::Integer,config,S,model) = ()
 
 
 function _update_running_mean!(stored_field_vals, current_vals, n)

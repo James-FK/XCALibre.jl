@@ -32,5 +32,6 @@ end
 
 function build_args(pp::Vector)
     vector_of_tuples = build_args.(pp)
-    return Tuple(first.(vector_of_tuples))
+    nonempty = filter(!isempty,vector_of_tuples)
+    return Tuple(first.(nonempty))
 end
