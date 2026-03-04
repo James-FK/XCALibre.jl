@@ -75,16 +75,9 @@ function setup_incompressible_solvers(
 
     p_eqn = (
         - Laplacian{schemes.p.laplacian}(rDf, p) == - Source(divHv)
-        # Laplacian{schemes.p.laplacian}(rDf, p) == Source(divHv)
-        # Laplacian{schemes.p.laplacian}(rDf, p) == Source(divHv)
     ) → ScalarEquation(p, boundaries.p)
 
     @info "Initialising preconditioners..."
-
-    # @reset U_eqn.preconditioner = set_preconditioner(
-    #                 solvers.U.preconditioner, U_eqn, boundaries.U, config)
-    # @reset p_eqn.preconditioner = set_preconditioner(
-    #                 solvers.p.preconditioner, p_eqn, boundaries.p, config)
 
     @reset U_eqn.preconditioner = set_preconditioner(solvers.U.preconditioner, U_eqn)
     @reset p_eqn.preconditioner = set_preconditioner(solvers.p.preconditioner, p_eqn)
@@ -119,8 +112,11 @@ function SIMPLE(
     (; solvers, schemes, runtime, hardware, boundaries, postprocess) = config
     (; iterations, write_interval,dt) = runtime
     (; backend) = hardware
+
+    dt_cpu = zeros(_get_float(mesh), 1)
+    copyto!(dt_cpu, config.runtime.dt)
     
-    postprocess = convert_time_to_iterations(postprocess,model,dt,iterations)
+    postprocess = convert_time_to_iterations(postprocess,model,dt_cpu[1],iterations)
     mdotf = get_flux(U_eqn, 2)
     nueff = get_flux(U_eqn, 3)
     rDf = get_flux(p_eqn, 1)
@@ -141,7 +137,6 @@ function SIMPLE(
 
     # Pre-allocate auxiliary variables
     TF = _get_float(mesh)
-    # prev = _convert_array!(prev, backend) 
     prev = KernelAbstractions.zeros(backend, TF, n_cells) 
 
     # Pre-allocate vectors to hold residuals 
@@ -157,7 +152,6 @@ function SIMPLE(
     flux!(mdotf, Uf, config)
     grad!(∇p, pf, p, boundaries.p, time, config)
     limit_gradient!(schemes.p.limiter, ∇p, p, config)
-
 
     update_nueff!(nueff, nu, model.turbulence, config)
 
@@ -212,20 +206,8 @@ function SIMPLE(
             limit_gradient!(schemes.p.limiter, ∇p, p, config)
         end
 
-        # explicit_relaxation!(p, prev, solvers.p.relax, config)
-
-        # Velocity and boundaries correction
-
-        # old approach
-        # correct_velocity!(U, Hv, ∇p, rD, config)
-        # interpolate!(Uf, U, config)
-        # correct_boundaries!(Uf, U, boundaries.U, time, config)
-        # flux!(mdotf, Uf, config) 
-
-        # new approach
-        # correct_mass_flux(mdotf, p, rDf, config)
-        correct_mass_flux1(mdotf, p_eqn, config)
-        correct_mass_periodic(mdotf, p_eqn, boundaries.p, config)
+        # correct mass flux and velocity
+        correct_mass_flux(mdotf, p_eqn, config)
         correct_velocity!(U, Hv, ∇p, rD, config)
 
         turbulence!(turbulenceModel, model, S, prev, time, config) 
@@ -280,7 +262,7 @@ function SIMPLE(
     return (Ux=R_ux, Uy=R_uy, Uz=R_uz, p=R_p)
 end
 
-### TEMP LOCATION FOR PROTOTYPING - NONORTHOGONAL CORRECTION 
+### TEMP LOCATION FOR PROTOTYPING
 
 function nonorthogonal_face_correction(eqn, grad, flux, config)
     mesh = grad.mesh
@@ -298,7 +280,6 @@ function nonorthogonal_face_correction(eqn, grad, flux, config)
     ndrange = n_ifaces
     kernel! = _nonorthogonal_face_correction(_setup(backend, workgroup, ndrange)...)
     kernel!(b, grad, flux, faces, cells, n_bfaces)
-    # KernelAbstractions.synchronize(backend)
 end
 
 @kernel function _nonorthogonal_face_correction(b, grad, flux, faces, cells, n_bfaces)
@@ -334,18 +315,10 @@ end
     T_hat = Sf - Ef # original
     faceCorrection = flux[fID]*gradf⋅T_hat
 
-    Atomix.@atomic b[cID1] += faceCorrection #*cell1.volume
-    Atomix.@atomic b[cID2] -= faceCorrection #*cell2.volume # should this be -ve?
-
-    # Atomix.@atomic b[cID1] -= faceCorrection #*cell1.volume
-    # Atomix.@atomic b[cID2] += faceCorrection #*cell2.volume # should this be -ve?
-        
+    Atomix.@atomic b[cID1] += faceCorrection
+    Atomix.@atomic b[cID2] -= faceCorrection 
+      
 end
-
-# +- => good match
-# -+ => looks worse at edges for gradient
-# -- => looks bad on top-right corner for gradient
-# ++ => looks bad on left grad and oscillations on the right
 
 function correction_weight(cells, faces, fi)
     (; ownerCells, centre) = faces[fi]
@@ -364,39 +337,7 @@ end
 
 ### TEMP LOCATION FOR PROTOTYPING
 
-function correct_mass_flux(mdotf, p, rDf, config)
-    # sngrad = FaceScalarField(mesh)
-    (; faces, cells, boundary_cellsID) = mdotf.mesh
-    (; hardware) = config
-    (; backend, workgroup) = hardware
-
-    n_faces = length(faces)
-    n_bfaces = length(boundary_cellsID)
-    n_ifaces = n_faces - n_bfaces
-
-    ndrange = n_ifaces # length(n_ifaces) was a BUG! should be n_ifaces only!!!!
-    kernel! = _correct_mass_flux(_setup(backend, workgroup, ndrange)...)
-    kernel!(mdotf, p, rDf, faces, cells, n_bfaces)
-    # KernelAbstractions.synchronize(backend)
-end
-
-@kernel function _correct_mass_flux(mdotf, p, rDf, faces, cells, n_bfaces)
-    i = @index(Global)
-    fID = i + n_bfaces
-
-    @inbounds begin 
-        face = faces[fID]
-        (; area, normal, ownerCells, delta) = face 
-        cID1 = ownerCells[1]
-        cID2 = ownerCells[2]
-        p1 = p[cID1]
-        p2 = p[cID2]
-        face_grad = area*(p2 - p1)/delta # best option so far!
-        mdotf[fID] -= face_grad*rDf[fID]
-    end
-end
-
-function correct_mass_flux1(mdotf, p_eqn, config)
+function correct_mass_flux(mdotf, p_eqn, config)
     # sngrad = FaceScalarField(mesh)
     (; faces, cells, boundary_cellsID) = mdotf.mesh
     (; hardware) = config
@@ -413,12 +354,19 @@ function correct_mass_flux1(mdotf, p_eqn, config)
     n_ifaces = n_faces - n_bfaces
 
     ndrange = n_ifaces # length(n_ifaces) was a BUG! should be n_ifaces only!!!!
-    kernel! = _correct_mass_flux1(_setup(backend, workgroup, ndrange)...)
+    kernel! = _correct_mass_flux(_setup(backend, workgroup, ndrange)...)
     kernel!(mdotf, p, nzval, colval, rowptr, faces, cells, n_bfaces)
-    # KernelAbstractions.synchronize(backend)
+    KernelAbstractions.synchronize(backend)
+
+    BCs = config.boundaries[1] # assume periodics always defined by user (extract first)
+    for BC ∈ BCs
+        correct_mass_periodic(
+            BC, mdotf, p, nzval, colval, rowptr, cells, faces, backend, workgroup)
+        KernelAbstractions.synchronize(backend)
+    end
 end
 
-@kernel function _correct_mass_flux1(
+@kernel function _correct_mass_flux(
     mdotf, p, nzval, colval, rowptr, faces, cells, n_bfaces)
     i = @index(Global)
     fID = i + n_bfaces
@@ -433,34 +381,15 @@ end
         # need to get aN from sparse system
         zID = spindex(rowptr, colval, cID1, cID2)
         aN = nzval[zID]
-        # mdotf[fID] += -aN*(p2 - p1) # this worked well with periodics
         mdotf[fID] += aN*(p2 - p1) # positive because pressure eqn has negative sign
     end
 end
 
 ### Correct mass flux at periodic boundaries
 
-function correct_mass_periodic(mdotf, p_eqn, pBCs, config)
-    (; faces, cells, boundary_cellsID) = mdotf.mesh
-    (; hardware) = config
-    (; backend, workgroup) = hardware
+correct_mass_periodic(arg...) = nothing
 
-    p = p_eqn.model.terms[1].phi
-    A = _A(p_eqn)
-    nzval = _nzval(A)
-    colval = _colval(A)
-    rowptr = _rowptr(A)
-
-    for BC ∈ pBCs
-        _correct_mass_periodic_dispatch(
-            BC, mdotf, p, nzval, colval, rowptr, cells, faces, backend, workgroup)
-    end
-
-end
-
-_correct_mass_periodic_dispatch(arg...) = nothing
-
-function _correct_mass_periodic_dispatch(
+function correct_mass_periodic(
     BC::PeriodicParent, mdotf, p, nzval, colval, rowptr, cells, faces, backend, workgroup)
     (; IDs_range, value) = BC
     (; face_map) = value
@@ -486,12 +415,10 @@ end
     zID = spindex(rowptr, colval, cID1, cID2)
     aN = nzval[zID]
     correction = aN*(p2 - p1)
-    # mdotf[fID] -= correction # this worked but testing sign correctness
     mdotf[fID] += correction
     mdotf[pfID] = -mdotf[fID] 
     
 end
-
 
 ### Correct interpolation at periodic boundaries
 
@@ -501,6 +428,7 @@ function correct_interpolation_periodic(phif, phi, BCs, config)
 
     for BC ∈ BCs
         _correct_interpolation_periodic_dispatch(BC, phif, phi, backend, workgroup)
+        KernelAbstractions.synchronize(backend)
     end
 
 end

@@ -84,7 +84,7 @@ Function for construction of periodic boundary conditions.
     - `value` represents a `PeriodicValue` struct with the following fields:
         - patchID -- boundary/patch ID
         - transform -- stores information to apply the patch pair matching e.g. LinearTransform.
-        - face_map -- vector providing indeces to faces of match patch
+        - face_map -- vector providing indices to faces of match patch
         - ismaster -- flat to identify one of the patch pairs as the main patch
 
 ### Example
@@ -326,14 +326,23 @@ end
     pfID = bc.value.face_map[i] # id of periodic face 
     pface = faces[pfID]
     pcellID = pface.ownerCells[1]
+    C1 = cell.centre
+    C2 = cells[pcellID].centre - transform.distance
+    Cf = face.centre
+    n = face.normal
 
-    w = pface.delta/(face.delta + pface.delta)
+    Pf = Cf - C1
+    PN = C2 - C1 
+
+    wn = (Pf⋅n)/(PN⋅n)
+    w = one(wn) - wn
+    # w = pface.delta/(face.delta + pface.delta)
+    # wn = one(w) - w
 
     # Calculate link coefficients
-    term.flux[pfID] = -term.flux[fID] # copy flux from master to shadow (for stability)
     ap = term.sign*(term.flux[fID])
     ac = ap*w
-    an = ap*(one(w) - w)
+    an = ap*wn
 
     NN = spindex(rowptr, colval, pcellID, pcellID)
     NP = spindex(rowptr, colval, pcellID, cellID)
@@ -364,7 +373,6 @@ end
     pface = faces[pfID]
     pcellID = pface.ownerCells[1]
 
-    term.flux[pfID] = -term.flux[fID] # copy flux from master to shadow (for stability)
     mdot = term.sign*(term.flux[fID])
     ap = max(mdot, 0.0) # flow leaves master
     an = -max(-mdot, 0.0) # flow leaves shadow
@@ -397,16 +405,21 @@ end
     pfID = bc.value.face_map[i] # id of periodic face 
     pface = faces[pfID]
     pcellID = pface.ownerCells[1]
+    C1 = cell.centre
+    C2 = cells[pcellID].centre - transform.distance
+    Cf = face.centre
+    n = face.normal
 
+    Pf = Cf - C1
+    PN = C2 - C1 
 
-    # Calculate interpoloation weight
-    w = pface.delta/(face.delta + pface.delta)
+    wn = (Pf⋅n)/(PN⋅n)
+    w = one(wn) - wn
 
     # Calculate link coefficients
     mdot = term.sign*(term.flux[fID])
-    term.flux[pfID] = -term.flux[fID] # copy flux from master to shadow (for stability)
     acLinear = mdot*w 
-    anLinear = mdot*(one(w) - w)
+    anLinear = mdot*wn
     acUpwind = max(mdot, 0.0) 
     anUpwind = -max(-mdot, 0.0)
     ac = 0.75*acLinear + 0.25*acUpwind

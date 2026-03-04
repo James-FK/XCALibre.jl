@@ -9,14 +9,15 @@ grid = "cascade_3D_periodic_2p5mm.unv"
 mesh_file = joinpath(grids_dir, grid)
 mesh = UNV3D_mesh(mesh_file, scale=0.001)
 
-backend = CUDABackend(); workgroup = 32
-# backend = CPU(); workgroup = 1024; activate_multithread(backend)
+# backend = CUDABackend(); workgroup = 32
+backend = CPU(); workgroup = 1024; activate_multithread(backend)
 
 hardware = Hardware(backend=backend, workgroup=workgroup)
 mesh_dev = adapt(backend, mesh)
 
 periodic1 = construct_periodic(mesh, backend, :top, :bottom)
-periodic2 = construct_periodic(mesh, backend, :side1, :side2)
+# periodic2 = construct_periodic(mesh, backend, :side1, :side2)
+periodic2 = Symmetry.([:side1, :side2])
 
 velocity = [0.25, 0.0, 0.0]
 nu = 1e-3
@@ -59,7 +60,7 @@ BCs= assign(
     )
 )
 
-divergence = LUST # Upwind Linear LUST
+divergence = Linear # Upwind Linear LUST
 schemes = (
     # # transient schemes
     # U = Schemes(time=Euler, divergence=divergence, gradient=Gauss),
@@ -75,25 +76,25 @@ solvers = (
     U = SolverSetup(
         solver      = Bicgstab(), #Cg(), # Bicgstab(), Gmres(), #Cg()
         preconditioner = Jacobi(),
-        convergence = 1e-8,
+        convergence = 1e-7,
         # # transient setup
         # atol = 1e-6,
         # relax=1
 
         # steady setup
-        relax       = 0.6,
+        relax       = 0.7,
         rtol = 1e-3
     ),
     p = SolverSetup(
         solver      = Cg(), #Gmres(), #Cg(), # Bicgstab(), Gmres()
         preconditioner = Jacobi(),
-        convergence = 1e-8,
+        convergence = 1e-7,
         # # transient setup
         # atol = 1e-6,
         # relax=1
 
         # steady setup
-        relax       = 0.15,
+        relax       = 0.3,
         rtol = 1e-3
     )
 )
@@ -112,9 +113,9 @@ initialise!(model.momentum.p, 0.0)
 
 residuals = run!(model, config, output=OpenFOAM()) # 353 iterations!
 
-# using Plots
-# fig = plot(; xlims=(0,runtime.iterations), ylims=(1e-10, 1e-4))
-# plot!(fig, 1:runtime.iterations, residuals.Ux, yscale=:log10, label="Ux")
-# plot!(fig, 1:runtime.iterations, residuals.Uy, yscale=:log10, label="Uy")
-# plot!(fig, 1:runtime.iterations, residuals.p, yscale=:log10, label="p")
-# fig
+using Plots
+fig = plot(; xlims=(0,runtime.iterations), ylims=(1e-10, 1e-1))
+plot!(fig, 1:runtime.iterations, residuals.Ux, yscale=:log10, label="Ux")
+plot!(fig, 1:runtime.iterations, residuals.Uy, yscale=:log10, label="Uy")
+plot!(fig, 1:runtime.iterations, residuals.p, yscale=:log10, label="p")
+fig
