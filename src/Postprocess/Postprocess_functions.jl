@@ -169,7 +169,7 @@ wall_shear_stress(patch::Symbol, model,config)  = begin
     ID = boundary_index(boundaries, patch)
     boundary = boundaries[ID]
     (; IDs_range) = boundary
-    @info "calculating viscous forces on patch: $patch at index $ID"
+    # @info "calculating viscous forces on patch: $patch at index $ID"
     x = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     y = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     z = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
