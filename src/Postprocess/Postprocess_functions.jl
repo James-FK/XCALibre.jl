@@ -157,6 +157,49 @@ Function to calculate the wall shear stress acting on a given patch/boundary.
 - `model` instance of `Physics` object needs to be passed 
 - `config` need to pass `Configuration` object as this contains the boundary conditions
 """
+# wall_shear_stress(patch::Symbol, model,config)  = begin
+#     # Line below needs to change to do selection based on nut BC
+#     turbulence = model.turbulence
+#     UBCs = config.boundaries.U
+#     typeof(turbulence) <: Laminar ? nut = ConstantScalar(0.0) : nut = model.turbulence.nut
+#     mesh = model.domain
+#     (; nu) = model.fluid
+#     (; U) = model.momentum
+#     (; boundaries, boundary_cellsID, faces) = mesh
+#     boundaries = get_boundaries(boundaries)
+#     ID = boundary_index(boundaries, patch)
+#     boundary = boundaries[ID]
+#     (; IDs_range) = boundary
+#     # @info "calculating viscous forces on patch: $patch at index $ID"
+#     x = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
+#     y = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
+#     z = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
+#     tauw_cpu = FaceVectorField(x,y,z, mesh)
+#     tauw = adapt(config.hardware.backend, tauw_cpu)
+#     Uw = zero(_get_float(mesh))
+#     for i ∈ 1:length(UBCs)
+#         if ID == UBCs[i].ID
+#             Uw = UBCs[i].value
+#             surface_normal_gradient!(tauw, U, UBCs[i].value, IDs_range,config)
+#         end
+#     end
+
+#     pos = fill(SVector{3,Float64}(0,0,0), length(IDs_range))
+#     for i ∈ eachindex(tauw)
+#         # fID = facesID[i]
+#         # cID = cellsID[i]
+#         fID = IDs_range[i]
+#         cID = boundary_cellsID[fID]
+#         face = faces[fID]
+#         nueff = nu[cID]  + nut[cID]
+#         tauw.x[i] *= nueff # this may need using νtf? (wall funcs)
+#         tauw.y[i] *= nueff
+#         tauw.z[i] *= nueff
+#         pos[i] = face.centre
+#     end
+    
+#     return tauw, pos
+# end
 wall_shear_stress(patch::Symbol, model,config)  = begin
     # Line below needs to change to do selection based on nut BC
     turbulence = model.turbulence
@@ -166,6 +209,9 @@ wall_shear_stress(patch::Symbol, model,config)  = begin
     (; nu) = model.fluid
     (; U) = model.momentum
     (; boundaries, boundary_cellsID, faces) = mesh
+    (;hardware) = config
+    (;backend, workgroup) = hardware
+    boundaries = get_boundaries(boundaries)
     ID = boundary_index(boundaries, patch)
     boundary = boundaries[ID]
     (; IDs_range) = boundary
@@ -173,30 +219,34 @@ wall_shear_stress(patch::Symbol, model,config)  = begin
     x = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     y = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     z = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
-    tauw = FaceVectorField(x,y,z, mesh)
+    tauw_cpu = FaceVectorField(x,y,z, mesh)
+    tauw = adapt(config.hardware.backend, tauw_cpu)
     Uw = zero(_get_float(mesh))
     for i ∈ 1:length(UBCs)
         if ID == UBCs[i].ID
             Uw = UBCs[i].value
-            surface_normal_gradient!(tauw, U, UBCs[i].value, IDs_range)
+            surface_normal_gradient!(tauw, U, UBCs[i].value, IDs_range,config)
         end
     end
 
-    pos = fill(SVector{3,Float64}(0,0,0), length(IDs_range))
-    for i ∈ eachindex(tauw)
-        # fID = facesID[i]
-        # cID = cellsID[i]
-        fID = IDs_range[i]
-        cID = boundary_cellsID[fID]
-        face = faces[fID]
-        nueff = nu[cID]  + nut[cID]
-        tauw.x[i] *= nueff # this may need using νtf? (wall funcs)
-        tauw.y[i] *= nueff
-        tauw.z[i] *= nueff
-        pos[i] = face.centre
-    end
+    pos = adapt(config.hardware.backend,fill(SVector{3,Float64}(0,0,0), length(IDs_range)))
+    ndrange = length(tauw)
+    kernel! = _wall_shear_stress!(_setup(backend, workgroup, ndrange)...)
+    kernel!(tauw,IDs_range,boundary_cellsID,faces,nut,nu,pos)
     
     return tauw, pos
+end
+
+@kernel function _wall_shear_stress!(tauw,IDs_range,boundary_cellsID,faces,nut,nu,pos)
+    i = @index(Global)
+    fID = IDs_range[i]
+    cID = boundary_cellsID[fID]
+    face = faces[fID]
+    nueff = nu[cID]  + nut[cID]
+    tauw.x[i] *= nueff # this may need using νtf? (wall funcs)
+    tauw.y[i] *= nueff
+    tauw.z[i] *= nueff
+    pos[i] = face.centre
 end
 """
     stress_tensor(U::VectorField, ν, νt, config)

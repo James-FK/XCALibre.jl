@@ -11,10 +11,11 @@ export convert_time_to_iterations
     update_interval::Union{Real,Nothing}
 end
 
-function FieldAverageWSS(model;patch::Symbol,name::AbstractString = "Wall_shear_stress", start::Union{Real,Nothing}=nothing, stop::Union{Real,Nothing}=nothing,update_interval::Union{Real,Nothing}=nothing)
+function FieldAverageWSS(model,backend;patch::Symbol,name::AbstractString = "Wall_shear_stress", start::Union{Real,Nothing}=nothing, stop::Union{Real,Nothing}=nothing,update_interval::Union{Real,Nothing}=nothing)
     #create storage of the appropriate length 
     mesh  = model.domain
-    boundaries = mesh.boundaries
+    # boundaries = mesh.boundaries
+    boundaries = get_boundaries(mesh.boundaries)
     ID = boundary_index(boundaries, patch)
     boundary = boundaries[ID]
     (; IDs_range) = boundary
@@ -22,7 +23,8 @@ function FieldAverageWSS(model;patch::Symbol,name::AbstractString = "Wall_shear_
     x = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     y = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
     z = FaceScalarField(zeros(Float64, length(IDs_range)), mesh)
-    tauw = FaceVectorField(x,y,z, mesh)
+    tauw_cpu = FaceVectorField(x,y,z, mesh)
+    tauw = adapt(backend, tauw_cpu)
 
     return FieldAverageWSS(tauw=tauw,pos=pos, patch=patch, name=name,start=start, stop=stop, update_interval=update_interval)
 end
@@ -36,8 +38,8 @@ function runtime_postprocessing!(avg::FieldAverageWSS{T,V,P,S},iter::Integer,n_i
         _update_running_mean!(avg.tauw.z.values,current_tauw.z.values,n)
     end
     if iter == n_iterations
-        shear = avg.tauw
-        pos = wall_shear_stress(avg.patch, model,config)[2]
+        shear = adapt(CPU(), avg.tauw)
+        pos = adapt(CPU(), wall_shear_stress(avg.patch, model,config)[2])
         open("ShearStress.txt", "w") do io
         for (i, p) in enumerate(pos)
             println(io,

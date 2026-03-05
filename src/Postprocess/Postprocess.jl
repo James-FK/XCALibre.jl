@@ -4,6 +4,7 @@ using StaticArrays
 
 using LinearAlgebra
 using SparseMatricesCSR
+using KernelAbstractions
 # using ThreadedSparseCSR
 
 using Adapt
