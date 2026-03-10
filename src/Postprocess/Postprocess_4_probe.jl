@@ -16,27 +16,23 @@ function Probe(field,mesh_cpu;location::AbstractVector, name::AbstractString,sta
     return Probe(field=field, index=index,name=name,start=start,stop=stop,update_interval=update_interval,write_interval=write_interval)
 end
 
-function runtime_postprocessing!(prb::Probe{T,I,S},iter::Integer,n_iterations::Integer) where {T<:ScalarField,I,S}
+function runtime_postprocessing!(prb::Probe{T,I,S},iter::Integer,n_iterations::Integer,time) where {T<:VectorField,I,S}
     if must_calculate(prb,iter,n_iterations)
         index = prb.index
-        current_value = prb.field.values[index]
-        write_probe_to_txt(time,current_value,name)
+        fx = prb.field.x.values[index]
+        fy = prb.field.y.values[index]
+        fz = prb.field.z.values[index]
+        write_probe_to_txt(time,fx,fy,fz,prb.name)
     end
     return nothing
 end
 
 #just write a function that writes out the time and the value of the scalar/vector field at that instant 
-# function write_probe_to_txt(time,current_value,name)
-#     open("ShearStress.txt", "w") do io
-#     for (i, p) in enumerate(pos)
-#         println(io,
-#             p[1], ' ', p[2], ' ', p[3], ' ', shear.x.values[i], ' ', shear.y.values[i], ' ', shear.z.values[i]
-#             )
-#     end
-# end
-
-
-
+function write_probe_to_txt(time,fx,fy,fz,name)
+    open(String(name)*".txt", "a") do io
+    println(io, time, ' ', fx, ' ',fy,' ', fz )
+    end
+end
 
 function find_nearest_cell_index(mesh, vector_coords)
     best_index = 1
@@ -53,4 +49,61 @@ function find_nearest_cell_index(mesh, vector_coords)
     best_centre = mesh.cells[best_index].centre
 
     return best_index, best_centre
+end
+
+function convert_time_to_iterations(prb::Probe, model,dt,iterations)
+    if model.time === Transient()
+        if prb.start === nothing
+            start = 1
+        else 
+            prb.start >= 0  || throw(ArgumentError("Start must be a value ≥ 0 (got $(prb.start))"))
+            start = clamp(ceil(Int, prb.start / dt), 1, iterations) 
+        end
+
+        if prb.stop === nothing 
+            stop = iterations
+        else
+            prb.stop ≥ 0 || throw(ArgumentError("stop must be ≥ 0 (got $(prb.stop))"))
+            stop = clamp(floor(Int,prb.stop / dt), 1, iterations)
+        end
+
+        if prb.update_interval === nothing 
+            update_interval = 1
+        else
+            prb.update_interval > 0 || throw(ArgumentError("update interval must be > 0 (got $(prb.update_interval))"))
+            update_interval = max(1, floor(Int,prb.update_interval / dt))
+        end
+        stop >= start || throw(ArgumentError("After conversion with dt=$dt the averaging window is empty (start = $start, stop = $stop)"))
+        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval,write_interval=prb.write_interval)
+
+    else #for Steady runs use iterations 
+        if prb.start === nothing
+            start = 1
+        else 
+            prb.start isa Integer || throw(ArgumentError("For steady runs, start must be specified in iterations and therefore be an integer (got $(prb.start))"))
+            prb.start >=1     || throw(ArgumentError("Start must be ≥1 (got $(prb.start))"))
+            start = prb.start
+        end
+
+        if prb.stop === nothing 
+            stop = iterations
+        else
+            prb.stop isa Integer || throw(ArgumentError("For steady runs, stop must be specified in iterations and therefore be an integer (got $(prb.stop))"))
+            prb.stop >=1     || throw(ArgumentError("Stop must be ≥1 (got $(prb.stop))"))
+            stop = prb.stop
+        end
+
+        if prb.update_interval === nothing 
+            update_interval = 1
+        else
+            prb.update_interval isa Integer || throw(ArgumentError("For steady runs, update_interval must be specified in iterations and therefore be an integer (got $(prb.update_interval))"))
+            prb.update_interval >= 1 || throw(ArgumentError("update interval must be ≥1 (got $(prb.update_interval))"))
+            update_interval = prb.update_interval
+        end
+
+        stop >= start || throw(ArgumentError("stop iteration needs to be ≥ start  (got start = $start, stop = $stop)"))
+        stop <= iterations || throw(ArgumentError("stop ($stop) must be ≤ iterations ($iterations)"))
+        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval,write_interval=prb.write_interval)
+
+    end
 end
