@@ -6,22 +6,22 @@ export Probe
     start::Union{Real,Nothing}
     stop::Union{Real,Nothing}
     update_interval::Union{Real,Nothing}
-    write_interval::Union{Real,Nothing}
 end
 
-function Probe(field,mesh_cpu;location::AbstractVector, name::AbstractString,start::Union{Real,Nothing}=nothing,stop::Union{Real,Nothing}=nothing,update_interval::Union{Real,Nothing}=nothing, write_interval::Union{Real,Nothing}=nothing)
+function Probe(field,mesh_cpu;location::AbstractVector, name::AbstractString,start::Union{Real,Nothing}=nothing,stop::Union{Real,Nothing}=nothing,update_interval::Union{Real,Nothing}=nothing)
     index, best_centre = find_nearest_cell_index(mesh_cpu,location)
     @info "Nearest cell centre located at $best_centre "
 
-    return Probe(field=field, index=index,name=name,start=start,stop=stop,update_interval=update_interval,write_interval=write_interval)
+    return Probe(field=field, index=index,name=name,start=start,stop=stop,update_interval=update_interval)
 end
 
 function runtime_postprocessing!(prb::Probe{T,I,S},iter::Integer,n_iterations::Integer,time) where {T<:VectorField,I,S}
     if must_calculate(prb,iter,n_iterations)
         index = prb.index
-        fx = prb.field.x.values[index]
-        fy = prb.field.y.values[index]
-        fz = prb.field.z.values[index]
+
+        fx = @allowscalar prb.field.x.values[index]
+        fy = @allowscalar prb.field.y.values[index]
+        fz = @allowscalar prb.field.z.values[index]
         write_probe_to_txt(time,fx,fy,fz,prb.name)
     end
     return nothing
@@ -74,7 +74,7 @@ function convert_time_to_iterations(prb::Probe, model,dt,iterations)
             update_interval = max(1, floor(Int,prb.update_interval / dt))
         end
         stop >= start || throw(ArgumentError("After conversion with dt=$dt the averaging window is empty (start = $start, stop = $stop)"))
-        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval,write_interval=prb.write_interval)
+        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval)
 
     else #for Steady runs use iterations 
         if prb.start === nothing
@@ -103,7 +103,7 @@ function convert_time_to_iterations(prb::Probe, model,dt,iterations)
 
         stop >= start || throw(ArgumentError("stop iteration needs to be ≥ start  (got start = $start, stop = $stop)"))
         stop <= iterations || throw(ArgumentError("stop ($stop) must be ≤ iterations ($iterations)"))
-        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval,write_interval=prb.write_interval)
+        return Probe(field=prb.field, index=prb.index,name=prb.name,start=start,stop=stop,update_interval=update_interval)
 
     end
 end

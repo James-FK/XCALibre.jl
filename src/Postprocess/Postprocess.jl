@@ -4,6 +4,8 @@ using StaticArrays
 
 using LinearAlgebra
 using SparseMatricesCSR
+using GPUArrays
+
 # using ThreadedSparseCSR
 
 using Adapt
