@@ -43,7 +43,7 @@ function FieldAverage(field; name::AbstractString, start::Union{Real,Nothing}=no
     return FieldAverage(field=field, name=name, mean=storage,start=start, stop=stop, update_interval=update_interval)
 end
 
-function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,config,Str,model) where {T<:ScalarField,S}
+function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,config,Str,model,time) where {T<:ScalarField,S}
     if must_calculate(avg,iter,n_iterations)
         n = div(iter - avg.start,avg.update_interval) + 1
         current_field = avg.field
@@ -52,7 +52,7 @@ function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iteratio
     return nothing
 end
 
-function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,config,Str,model) where {T<:VectorField,S}
+function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iterations::Integer,config,Str,model,time) where {T<:VectorField,S}
     if must_calculate(avg,iter,n_iterations)
         n = div(iter - avg.start,avg.update_interval) + 1
         current_field = avg.field
@@ -63,12 +63,12 @@ function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iteratio
     return nothing 
 end
 
-function runtime_postprocessing!(avg::Vector,iter::Integer,n_iterations::Integer,config,Str,model)
+function runtime_postprocessing!(avg::Vector,iter::Integer,n_iterations::Integer,config,Str,model,time)
     runtime_postprocessing!.(avg,Ref(iter),Ref(n_iterations),Ref(config),Ref(Str),Ref(model))
     return nothing
 end
 
-runtime_postprocessing!(::Nothing,::Integer,::Integer,config,S,model) = ()
+runtime_postprocessing!(::Nothing,::Integer,::Integer,config,S,model,time) = ()
 
 
 function _update_running_mean!(stored_field_vals, current_vals, n)

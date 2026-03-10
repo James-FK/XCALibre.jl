@@ -5,6 +5,7 @@ using StaticArrays
 using LinearAlgebra
 using SparseMatricesCSR
 using KernelAbstractions
+using GPUArrays
 # using ThreadedSparseCSR
 
 using Adapt
@@ -23,5 +24,6 @@ include("Postprocess_1_field_rms.jl")
 include("Postprocess_2_reynolds_stress_tensor.jl")
 include("Postprocess_3_Q-Criterion.jl")
 include("Postprocess_4_wall_shear_stress.jl")
+include("Postprocess_4_probe.jl")
 
 end

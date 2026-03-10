@@ -29,7 +29,7 @@ function FieldAverageWSS(model,backend;patch::Symbol,name::AbstractString = "Wal
     return FieldAverageWSS(tauw=tauw,pos=pos, patch=patch, name=name,start=start, stop=stop, update_interval=update_interval)
 end
 
-function runtime_postprocessing!(avg::FieldAverageWSS{T,V,P,S},iter::Integer,n_iterations::Integer,config,Str,model) where {T,V,P,S}
+function runtime_postprocessing!(avg::FieldAverageWSS{T,V,P,S},iter::Integer,n_iterations::Integer,config,Str,model,time) where {T,V,P,S}
     if must_calculate(avg,iter,n_iterations)
         n = div(iter - avg.start,avg.update_interval) + 1
         current_tauw, pos = wall_shear_stress(avg.patch, model,config) 

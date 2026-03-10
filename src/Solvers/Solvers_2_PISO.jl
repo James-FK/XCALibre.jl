@@ -200,7 +200,7 @@ function PISO(
             ]
         )
 
-    runtime_postprocessing!(postprocess,iteration,iterations,config,S,model)
+    runtime_postprocessing!(postprocess,iteration,iterations,config,S,model,time)
     
     if iteration%write_interval + signbit(write_interval) == 0
         save_output(model, outputWriter, iteration, time, config)

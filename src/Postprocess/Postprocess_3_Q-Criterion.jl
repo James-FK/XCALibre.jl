@@ -20,7 +20,7 @@ function QCriterion(inputfield; name::String =  "Q-Criterion", start::Union{Real
     return  QCriterion(Q=storage;S2 = strain, Ω2 = vorticity, name=name, start=start, stop=stop, update_interval=update_interval)
 end
 
-function runtime_postprocessing!(QC::QCriterion{T,T1,T2,V},iter::Integer,n_iterations::Integer,config,S,model) where {T<:ScalarField,V,T1,T2}
+function runtime_postprocessing!(QC::QCriterion{T,T1,T2,V},iter::Integer,n_iterations::Integer,config,S,model,time) where {T<:ScalarField,V,T1,T2}
     magnitude2!(QC.S2, S, config)
     Ω = Vorticity(S.U,S.gradU)
     magnitude2!(QC.Ω2,Ω,config)
