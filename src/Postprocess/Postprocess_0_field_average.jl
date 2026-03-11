@@ -64,7 +64,7 @@ function runtime_postprocessing!(avg::FieldAverage{T,S},iter::Integer,n_iteratio
 end
 
 function runtime_postprocessing!(avg::Vector,iter::Integer,n_iterations::Integer,config,Str,model,time)
-    runtime_postprocessing!.(avg,Ref(iter),Ref(n_iterations),Ref(config),Ref(Str),Ref(model))
+    runtime_postprocessing!.(avg,Ref(iter),Ref(n_iterations),Ref(config),Ref(Str),Ref(model),Ref(time))
     return nothing
 end
 
