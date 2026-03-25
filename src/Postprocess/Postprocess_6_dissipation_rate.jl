@@ -1,7 +1,7 @@
 #Here I will work out the dissipation rate based on the mean of the velocity gradient tensor 
 #just need to accumulate the average of G and the average of G squqred 
 export DissipationRate
-@kwdef struct DissipationRate{T<:AbstractScalarField,T1,T2,V<:AbstractString}
+@kwdef struct DissipationRate{T<:AbstractScalarField,T1<:AbstractTensorField,T2,V<:AbstractString}
     ϵ::T 
     GradU_mean::T1
     GradU2::T2
