@@ -20,22 +20,32 @@ end
     # end
 end
 
-double_inner_product!(
-    s, t0::AbstractTensorField, t2) = 
-begin
-    sum = 0.0
-    for i ∈ eachindex(s)
-        t1 = 2.0.*t0[i] .- (2/3)*t0[i]*I
-        sum = 0.0
-        for j ∈ 1:3
-            for k ∈ 1:3
-                sum +=   t1[j,k]*t2[i][k,j]
-            end
-        end
-        s[i] = sum
-    end
+double_inner_product!(S::F, T::AbstractTensorField, R::AbstractTensorField,config; scale_factor=1.0) where F<:ScalarField = begin
+    (; hardware) = config
+    (; backend, workgroup) = hardware
+
+    ndrange = length(S)
+    kernel! = _double_inner_product!(_setup(backend, workgroup, ndrange)...)
+    kernel!(S, T, R,scale_factor)
 end
 
+
+@kernel function _double_inner_product!(S::F, T::AbstractTensorField, R::AbstractTensorField,scale_factor) where F<:ScalarField
+    i = @index(Global)
+    @uniform values = S.values
+
+    @inbounds begin
+        sum = 0.0
+        Tjk = T[i]
+        Rjk = R[i]
+        for j ∈ 1:3
+            for k ∈ 1:3
+                sum +=   Tjk[j,k] * Rjk[j,k]
+            end
+        end
+        values[i] = sum*scale_factor
+    end
+end
 # function magnitude!(magS::ScalarField, S::AbstractVectorField, config)
 function magnitude!(magS::ScalarField, S, config)
     (; hardware) = config

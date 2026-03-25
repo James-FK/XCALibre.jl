@@ -287,7 +287,14 @@ SymmetricTensorField(mesh::AbstractMesh) = begin
     zy = yz
     SymmetricTensorField(xx,xy,xz,yx,yy,yz,zx,zy,zz,mesh)
 end
-
+Base.getindex(T::SymmetricTensorField, i::Integer) = begin
+    Tf = eltype(T.xx.values)
+    SMatrix{3,3,Tf,9}(
+        T.xx[i], T.yx[i], T.zx[i],
+        T.xy[i], T.yy[i], T.zy[i],
+        T.xz[i], T.yz[i], T.zz[i],
+    )
+end
 
 
 # TRANSPOSE IMPLEMENTATION
