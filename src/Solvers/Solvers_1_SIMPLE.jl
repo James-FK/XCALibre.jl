@@ -62,6 +62,11 @@ function setup_incompressible_solvers(
     initialise!(rDf, 1.0)
     nueff = FaceScalarField(mesh)
     divHv = ScalarField(mesh)
+    
+    bodyforce = VectorField(mesh)
+    bodyforce.x.values .= 0.0445 .+ ∇p.result.x.values
+    bodyforce.y.values .= ∇p.result.y.values
+    bodyforce.z.values .= ∇p.result.z.values
 
     @info "Defining models..."
 
@@ -70,7 +75,7 @@ function setup_incompressible_solvers(
         + Divergence{schemes.U.divergence}(mdotf, U) 
         - Laplacian{schemes.U.laplacian}(nueff, U) 
         == 
-        - Source(∇p.result)
+        - Source(bodyforce)
     ) → VectorEquation(U, boundaries.U)
 
     p_eqn = (
