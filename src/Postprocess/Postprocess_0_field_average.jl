@@ -71,12 +71,29 @@ end
 runtime_postprocessing!(::Nothing,::Integer,::Integer,config,S,model,time) = ()
 
 
-function _update_running_mean!(stored_field_vals, current_vals, n)
+function _update_running_mean!(stored_field_vals::AbstractArray, current_vals::AbstractArray, n)
     a = 1.0 / n 
     b = 1.0 - a
     @. stored_field_vals = b * stored_field_vals + a * current_vals 
     return nothing 
 end
+
+function _update_running_mean!(storage_field::AbstractScalarField, current_field::AbstractScalarField, n)
+    a = 1.0 / n 
+    b = 1.0 - a
+    @. storage_field.values = b * storage_field.values + a * current_field.values
+    return nothing 
+end
+function _update_running_mean!(storage_field::AbstractVectorField, current_field::AbstractVectorField, n)
+    a = 1.0 / n 
+    b = 1.0 - a
+    @. storage_field.x.values = b * storage_field.x.values + a * current_field.x.values 
+    @. storage_field.y.values = b * storage_field.y.values + a * current_field.y.values 
+    @. storage_field.z.values = b * storage_field.z.values + a * current_field.z.values 
+    return nothing 
+end
+
+#add a TensorField implementation to clean the code up more 
 
 function must_calculate(field_struct,iter::Integer,n_iterations::Integer)
     eff_stop = min(field_struct.stop, n_iterations)

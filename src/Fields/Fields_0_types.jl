@@ -98,6 +98,20 @@ Base.length(s::AbstractScalarField) = length(s.values)
 Base.eachindex(s::AbstractScalarField) = eachindex(s.values)
 Base.eltype(s::AbstractScalarField) = eltype(s.values)
 KA.get_backend(s::AbstractScalarField) = KA.get_backend(s.values)
+Base.:*(s1::ScalarField, s2::ScalarField) = begin
+    out = ScalarField(s1.mesh)
+    @inbounds for i in eachindex(s1)
+        out[i] = s1[i] * s2[i]
+    end
+    out
+end
+Base.:+(s1::ScalarField, s2::ScalarField) = begin
+    out = ScalarField(s1.mesh)
+    @inbounds for i in eachindex(s1)
+        out[i] = s1[i] + s2[i]
+    end
+    out
+end
 
 # VECTOR FIELD IMPLEMENTATION
 
@@ -155,6 +169,33 @@ Base.length(v::AbstractVectorField) = length(v.x)
 Base.eachindex(v::AbstractVectorField) = eachindex(v.x)
 Base.eltype(v::AbstractVectorField) = eltype(v.x)
 KA.get_backend(v::AbstractVectorField) = KA.get_backend(v.x)
+Base.:+(v1::AbstractVectorField, v2::AbstractVectorField) = begin
+    out = VectorField(v1.mesh)
+    @inbounds for i in eachindex(v1)
+        out.x[i] = v1.x[i] + v2.x[i]
+        out.y[i] = v1.y[i] + v2.y[i]
+        out.z[i] = v1.z[i] + v2.z[i]
+    end
+    out
+end
+Base.:-(v1::AbstractVectorField, v2::AbstractVectorField) = begin
+    out = VectorField(v1.mesh)
+    @inbounds for i in eachindex(v1)
+        out.x[i] = v1.x[i] - v2.x[i]
+        out.y[i] = v1.y[i] - v2.y[i]
+        out.z[i] = v1.z[i] - v2.z[i]
+    end
+    out
+end
+
+Base.:*(s::ScalarField, v::VectorField) = begin
+    VectorField(s * v.x, s * v.y, s * v.z, s.mesh)
+end
+
+Base.:*(v::VectorField, s::ScalarField) = begin
+    VectorField(s * v.x, s * v.y, s * v.z, s.mesh)
+end
+
 
 struct Sqr{N,T<:AbstractVectorField} <: AbstractTensorField
     scale::N
@@ -295,7 +336,17 @@ Base.getindex(T::SymmetricTensorField, i::Integer) = begin
         T.xz[i], T.yz[i], T.zz[i],
     )
 end
-
+Base.setindex!(T::SymmetricTensorField, t::SMatrix{3,3,F,9}, i::Integer) where {F} = begin
+    @inbounds begin
+        T.xx[i] = t[1,1]
+        T.xy[i] = t[1,2]
+        T.xz[i] = t[1,3]
+        T.yy[i] = t[2,2]
+        T.yz[i] = t[2,3]
+        T.zz[i] = t[3,3]
+    end
+    return T
+end
 
 # TRANSPOSE IMPLEMENTATION
 

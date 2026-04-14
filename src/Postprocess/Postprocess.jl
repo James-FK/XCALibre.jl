@@ -27,4 +27,5 @@ include("Postprocess_4_wall_shear_stress.jl")
 include("Postprocess_4_probe.jl")
 include("Postprocess_6_disspation_rate.jl")
 include("Postprocess_7_production_TKE.jl")
+include("Postprocess_8_diffusion_TKE.jl")
 end

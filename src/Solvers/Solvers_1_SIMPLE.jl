@@ -75,7 +75,8 @@ function setup_incompressible_solvers(
         + Divergence{schemes.U.divergence}(mdotf, U) 
         - Laplacian{schemes.U.laplacian}(nueff, U) 
         == 
-        - Source(bodyforce)
+        # - Source(bodyforce)
+        - Source(∇p.result)
     ) → VectorEquation(U, boundaries.U)
 
     p_eqn = (
