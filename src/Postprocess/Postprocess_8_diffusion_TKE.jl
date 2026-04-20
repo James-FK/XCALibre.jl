@@ -1,13 +1,14 @@
 #The diffusion term of TKE budget due to pressure 
 export Diffusion
-@kwdef struct Diffusion{T<:AbstractField,S<:AbstractString,T1<:AbstractField,T2<:AbstractField,T3<:AbstractField,T4<:AbstractField, T5<:AbstractField}
+@kwdef struct Diffusion{T<:AbstractField,S<:AbstractString,T1<:AbstractField,T2<:AbstractField,T3<:AbstractField,T4<:AbstractField, T5<:AbstractField,T6<:AbstractField}
     name::S
     meanU::T
     meanp::T1
     meanpU::T2
     meanpUfluc::T3
     meanpUflucf::T4
-    result::T5
+    meanUiUiUj::T5
+    result::T6
     start::Union{Real,Nothing}
     stop::Union{Real,Nothing}
     update_interval::Union{Real,Nothing}
@@ -20,35 +21,43 @@ function Diffusion(field; name::AbstractString="Diffusion_TKE", start::Union{Rea
         meanpU = VectorField(field.mesh)
         meanpUfluc = VectorField(field.mesh)
         meanpUflucf = FaceVectorField(field.mesh)
+        meanUiUiUj = VectorField(field.mesh)
         result = ScalarField(field.mesh)
     else
         throw(ArgumentError("Unsupported field type: $(typeof(field))"))
     end
-    return  Diffusion(name=name,meanU=meanU,meanp=meanp,meanpU=meanpU,meanpUfluc=meanpUfluc,meanpUflucf=meanpUflucf,result=result,start=start,stop=stop,update_interval=update_interval)
+    return  Diffusion(name=name,meanU=meanU,meanp=meanp,meanpU=meanpU,meanpUfluc=meanpUfluc,meanpUflucf=meanpUflucf,meanUiUiUj=meanUiUiUj,result=result,start=start,stop=stop,update_interval=update_interval)
 end
 
 
 function runtime_postprocessing!(D::Diffusion,iter::Integer,n_iterations::Integer,config,Str,model,time)
     if must_calculate(D,iter,n_iterations)
-        current_U = model.momentum.U
-        current_p = model.momentum.p
+        U = model.momentum.U
+        p = model.momentum.p
         n = div(iter - D.start,D.update_interval) + 1
 
         #The pressure term 1/ρ * ∇⋅⟨p'u'⟩ 
-        _update_running_mean!(D.meanU,current_U,n)
-        _update_running_mean!(D.meanp,current_p,n)
-        _update_running_mean!(D.meanpU,current_p * current_U ,n)
+        _update_running_mean!(D.meanU,U,n)
+        _update_running_mean!(D.meanp,p,n)
+        _update_running_mean!(D.meanpU,p * U ,n)
         
-        tmp = D.meanpU - (D.meanU * D.meanp)
-        D.meanpUfluc.x.values .= tmp.x.values
-        D.meanpUfluc.y.values .= tmp.y.values
-        D.meanpUfluc.z.values .= tmp.z.values
+        meanpUflucf = D.meanpU - (D.meanU * D.meanp)
+        D.meanpUfluc.x.values .= meanpUflucf.x.values
+        D.meanpUfluc.y.values .= meanpUflucf.y.values
+        D.meanpUfluc.z.values .= meanpUflucf.z.values
         #divergence of ⟨u'p'⟩
         interpolate!(D.meanpUflucf,D.meanpUfluc,config)
         div!(D.result,D.meanpUflucf,config)
         #still need to scale by the density 
 
-        #The 
+        #The term ⟨u'ᵢu'ᵢu'ⱼ⟩
+        
+        #update mean of ⟨UᵢUᵢUⱼ⟩
+        _update_running_mean!(D.meanUiUiUj.x.values,(U.x.values.^2 + U.y.values.^2 + U.z.values.^2) .*U.x.values,n) 
+        _update_running_mean!(D.meanUiUiUj.y.values,(U.x.values.^2 + U.y.values.^2 + U.z.values.^2) .*U.y.values,n) 
+        _update_running_mean!(D.meanUiUiUj.z.values,(U.x.values.^2 + U.y.values.^2 + U.z.values.^2) .*U.z.values,n) 
+
+
     end
     return nothing 
 end
@@ -78,7 +87,7 @@ function convert_time_to_iterations(D::Diffusion, model,dt,iterations)
             update_interval = max(1, floor(Int,D.update_interval / dt))
         end
         stop >= start || throw(ArgumentError("After conversion with dt=$dt the averaging window is empty (start = $start, stop = $stop)"))
-        return Diffusion(name=D.name,meanU=D.meanU,meanp=D.meanp,meanpU=D.meanpU,meanpUfluc=D.meanpUfluc,meanpUflucf=D.meanpUflucf,result = D.result,start=start,stop=stop,update_interval=update_interval)
+        return Diffusion(name=D.name,meanU=D.meanU,meanp=D.meanp,meanpU=D.meanpU,meanpUfluc=D.meanpUfluc,meanpUflucf=D.meanpUflucf,meanUiUiUj=D.meanUiUiUj,result = D.result,start=start,stop=stop,update_interval=update_interval)
 
     else #for Steady runs use iterations 
         if D.start === nothing
@@ -107,6 +116,6 @@ function convert_time_to_iterations(D::Diffusion, model,dt,iterations)
 
         stop >= start || throw(ArgumentError("stop iteration needs to be ≥ start  (got start = $start, stop = $stop)"))
         stop <= iterations || throw(ArgumentError("stop ($stop) must be ≤ iterations ($iterations)"))
-        return Diffusion(name=D.name,meanU=D.meanU,meanp=D.meanp,meanpU=D.meanpU,meanpUfluc=D.meanpUfluc,meanpUflucf=D.meanpUflucf,result = D.result,start=start,stop=stop,update_interval=update_interval)
+        return Diffusion(name=D.name,meanU=D.meanU,meanp=D.meanp,meanpU=D.meanpU,meanpUfluc=D.meanpUfluc,meanpUflucf=D.meanpUflucf,meanUiUiUj=D.meanUiUiUj,result = D.result,start=start,stop=stop,update_interval=update_interval)
     end
 end

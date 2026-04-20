@@ -44,15 +44,8 @@ function runtime_postprocessing!(P::ProductionTKE{T,T1,T2,T3,T4,S},iter::Integer
         _update_running_mean!(P.mean_sq.zz.values, current_field.z.values .^2,n)
 
         #update the running mean of the velocity gradient tensor 
-        _update_running_mean!(P.gradU_mean.xx.values, gradU.xx.values,n)
-        _update_running_mean!(P.gradU_mean.xy.values, gradU.xy.values,n)
-        _update_running_mean!(P.gradU_mean.xz.values, gradU.xz.values,n)
-        _update_running_mean!(P.gradU_mean.yx.values, gradU.yx.values,n)
-        _update_running_mean!(P.gradU_mean.yy.values, gradU.yy.values,n)
-        _update_running_mean!(P.gradU_mean.yz.values, gradU.yz.values,n)
-        _update_running_mean!(P.gradU_mean.zx.values, gradU.zx.values,n)
-        _update_running_mean!(P.gradU_mean.zy.values, gradU.zy.values,n)
-        _update_running_mean!(P.gradU_mean.zz.values, gradU.zz.values,n)
+        _update_running_mean!(P.gradU_mean, gradU,n)
+
 
 
         #calculate and store reynolds stress tensor 

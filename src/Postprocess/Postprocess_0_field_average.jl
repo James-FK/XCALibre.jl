@@ -92,6 +92,23 @@ function _update_running_mean!(storage_field::AbstractVectorField, current_field
     @. storage_field.z.values = b * storage_field.z.values + a * current_field.z.values 
     return nothing 
 end
+function _update_running_mean!(storage_field::AbstractTensorField, current_field::AbstractTensorField, n)
+    a = 1.0 / n 
+    b = 1.0 - a
+    @. storage_field.xx.values = b * storage_field.xx.values + a * current_field.xx.values 
+    @. storage_field.xy.values = b * storage_field.xy.values + a * current_field.xy.values 
+    @. storage_field.xz.values = b * storage_field.xz.values + a * current_field.xz.values 
+    @. storage_field.yx.values = b * storage_field.yx.values + a * current_field.yx.values 
+    @. storage_field.yy.values = b * storage_field.yy.values + a * current_field.yy.values 
+    @. storage_field.yz.values = b * storage_field.yz.values + a * current_field.yz.values 
+    @. storage_field.zx.values = b * storage_field.zx.values + a * current_field.zx.values 
+    @. storage_field.zy.values = b * storage_field.zy.values + a * current_field.zy.values 
+    @. storage_field.zz.values = b * storage_field.zz.values + a * current_field.zz.values 
+    return nothing 
+end
+
+
+
 
 #add a TensorField implementation to clean the code up more 
 

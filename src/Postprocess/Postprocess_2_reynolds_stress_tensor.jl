@@ -43,17 +43,9 @@ function runtime_postprocessing!(RS::ReynoldsStress{T,T2,S},iter::Integer,n_iter
     if must_calculate(RS,iter,n_iterations)
         current_field = RS.field
         n = div(iter - RS.start,RS.update_interval) + 1
-        _update_running_mean!(RS.mean.x.values, current_field.x.values, n)
-        _update_running_mean!(RS.mean.y.values, current_field.y.values, n)
-        _update_running_mean!(RS.mean.z.values, current_field.z.values, n)
-    
+        _update_running_mean!(RS.mean, current_field, n)
 
-        _update_running_mean!(RS.mean_sq.xx.values, current_field.x.values .^2,n)
-        _update_running_mean!(RS.mean_sq.xy.values, current_field.x.values .* current_field.y.values,n)
-        _update_running_mean!(RS.mean_sq.xz.values, current_field.x.values .* current_field.z.values,n)
-        _update_running_mean!(RS.mean_sq.yy.values, current_field.y.values .^2,n)
-        _update_running_mean!(RS.mean_sq.yz.values, current_field.y.values .* current_field.z.values,n)
-        _update_running_mean!(RS.mean_sq.zz.values, current_field.z.values .^2,n)
+        _update_running_mean!(RS.mean_sq,current_field,n)
 
         @. RS.rs.xx.values = RS.mean_sq.xx.values - RS.mean.x.values^2
         @. RS.rs.xy.values = RS.mean_sq.xy.values - RS.mean.x.values * RS.mean.y.values
@@ -66,6 +58,23 @@ function runtime_postprocessing!(RS::ReynoldsStress{T,T2,S},iter::Integer,n_iter
     end
     return nothing
 end
+
+function _update_running_mean!(R::SymmetricTensorField, U::AbstractVectorField, n::Integer)
+    a = 1.0 / n
+    b = 1.0 - a
+
+    @. R.xx.values = b * R.xx.values + a * (U.x.values * U.x.values)
+    @. R.xy.values = b * R.xy.values + a * (U.x.values * U.y.values)
+    @. R.xz.values = b * R.xz.values + a * (U.x.values * U.z.values)
+    @. R.yy.values = b * R.yy.values + a * (U.y.values * U.y.values)
+    @. R.yz.values = b * R.yz.values + a * (U.y.values * U.z.values)
+    @. R.zz.values = b * R.zz.values + a * (U.z.values * U.z.values)
+
+    return nothing
+end
+
+
+
 function convert_time_to_iterations(RS::ReynoldsStress, model,dt,iterations)
     if model.time === Transient()
         if RS.start === nothing
