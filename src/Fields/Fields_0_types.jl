@@ -98,20 +98,19 @@ Base.length(s::AbstractScalarField) = length(s.values)
 Base.eachindex(s::AbstractScalarField) = eachindex(s.values)
 Base.eltype(s::AbstractScalarField) = eltype(s.values)
 KA.get_backend(s::AbstractScalarField) = KA.get_backend(s.values)
+
 Base.:*(s1::ScalarField, s2::ScalarField) = begin
     out = ScalarField(s1.mesh)
-    @inbounds for i in eachindex(s1)
-        out[i] = s1[i] * s2[i]
-    end
+    out.values .= s1.values .* s2.values
     out
 end
+
 Base.:+(s1::ScalarField, s2::ScalarField) = begin
     out = ScalarField(s1.mesh)
-    @inbounds for i in eachindex(s1)
-        out[i] = s1[i] + s2[i]
-    end
+    out.values .= s1.values .+ s2.values
     out
 end
+
 
 # VECTOR FIELD IMPLEMENTATION
 
@@ -169,32 +168,30 @@ Base.length(v::AbstractVectorField) = length(v.x)
 Base.eachindex(v::AbstractVectorField) = eachindex(v.x)
 Base.eltype(v::AbstractVectorField) = eltype(v.x)
 KA.get_backend(v::AbstractVectorField) = KA.get_backend(v.x)
+
 Base.:+(v1::AbstractVectorField, v2::AbstractVectorField) = begin
     out = VectorField(v1.mesh)
-    @inbounds for i in eachindex(v1)
-        out.x[i] = v1.x[i] + v2.x[i]
-        out.y[i] = v1.y[i] + v2.y[i]
-        out.z[i] = v1.z[i] + v2.z[i]
-    end
+    out.x.values .= v1.x.values .+ v2.x.values
+    out.y.values .= v1.y.values .+ v2.y.values
+    out.z.values .= v1.z.values .+ v2.z.values
     out
 end
 Base.:-(v1::AbstractVectorField, v2::AbstractVectorField) = begin
     out = VectorField(v1.mesh)
-    @inbounds for i in eachindex(v1)
-        out.x[i] = v1.x[i] - v2.x[i]
-        out.y[i] = v1.y[i] - v2.y[i]
-        out.z[i] = v1.z[i] - v2.z[i]
-    end
+    out.x.values .= v1.x.values .- v2.x.values
+    out.y.values .= v1.y.values .- v2.y.values
+    out.z.values .= v1.z.values .- v2.z.values
     out
 end
 
 Base.:*(s::ScalarField, v::VectorField) = begin
-    VectorField(s * v.x, s * v.y, s * v.z, s.mesh)
+    out = VectorField(s.mesh)
+    out.x.values .= s.values .* v.x.values
+    out.y.values .= s.values .* v.y.values
+    out.z.values .= s.values .* v.z.values
+    out
 end
-
-Base.:*(v::VectorField, s::ScalarField) = begin
-    VectorField(s * v.x, s * v.y, s * v.z, s.mesh)
-end
+Base.:*(v::VectorField, s::ScalarField) = s * v 
 
 
 struct Sqr{N,T<:AbstractVectorField} <: AbstractTensorField
