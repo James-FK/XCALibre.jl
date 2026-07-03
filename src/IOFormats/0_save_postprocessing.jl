@@ -20,8 +20,9 @@ function build_args(pp)
     if hasproperty(pp, :rs)
         return ((getproperty(pp, :name), getproperty(pp, :rs)),)
     elseif hasproperty(pp, :production)
-        return ((getproperty(pp, :names)[1], getproperty(pp, :production)), (getproperty(pp, :names)[2], getproperty(pp, :diffusion_pressure)),
-         (getproperty(pp, :names)[3], getproperty(pp, :diffusion_turbulent)), (getproperty(pp, :names)[4], getproperty(pp, :diffusion_viscous)), (getproperty(pp, :names)[5], getproperty(pp, :dissipation)))
+        return ((getproperty(pp, :names)[1], getproperty(pp, :convection)), (getproperty(pp, :names)[2], getproperty(pp, :production)), (getproperty(pp, :names)[3], getproperty(pp, :diffusion_pressure)),
+         (getproperty(pp, :names)[4], getproperty(pp, :diffusion_turbulent)), (getproperty(pp, :names)[5], getproperty(pp, :diffusion_viscous)),(getproperty(pp, :names)[6], getproperty(pp, :diffusion_SGS)),
+         (getproperty(pp, :names)[7], getproperty(pp, :dissipation)),(getproperty(pp, :names)[8], getproperty(pp, :dissipation_SGS)) )
     elseif hasproperty(pp, :ϵ)
         return ((getproperty(pp, :name), getproperty(pp, :ϵ)),)
     elseif hasproperty(pp, :result)

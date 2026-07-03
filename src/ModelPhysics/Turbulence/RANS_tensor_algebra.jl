@@ -1,6 +1,7 @@
 export inner_product!
 export double_inner_product!
 export magnitude!, magnitude2!
+export elementwise_multiply!
 
 inner_product!(S::F, ∇1::Grad, ∇2::Grad, config) where F<:ScalarField = begin
     (; hardware) = config
@@ -146,4 +147,21 @@ end
         vi = psi[i]
         psi2[i] = vi*vi'
     end
+end
+
+function elementwise_multiply!(result,F1,F2,config; scale_factor = 1.0)
+    (; hardware) = config
+    (; backend, workgroup) = hardware
+    
+    ndrange = length(F1)
+    kernel! = _elementwise_multiply!(_setup(backend, workgroup, ndrange)...)
+    kernel!(result,F1,F2,scale_factor)
+end
+
+@kernel function _elementwise_multiply!(result,F1,F2,scale_factor)
+    i = @index(Global)
+    @inbounds begin
+        result[i] = F1[i] * F2[i] * scale_factor
+    end
+
 end

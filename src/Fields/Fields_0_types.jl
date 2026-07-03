@@ -280,7 +280,38 @@ Base.setindex!(T::TensorField, t::SMatrix{3,3,F,9}, i::Integer) where F = begin
     T.yz[i] = t[2,3]
     T.zz[i] = t[3,3]
 end
+Base.:+(v1::AbstractTensorField, v2::AbstractTensorField) = begin
+    out = TensorField(v1.mesh)
+    out.xx.values .= v1.xx.values .+ v2.xx.values
+    out.xy.values .= v1.xy.values .+ v2.xy.values
+    out.xz.values .= v1.xz.values .+ v2.xz.values
 
+    out.yx.values .= v1.yx.values .+ v2.yx.values
+    out.yy.values .= v1.yy.values .+ v2.yy.values
+    out.yz.values .= v1.yz.values .+ v2.yz.values
+
+    out.zx.values .= v1.zx.values .+ v2.zx.values
+    out.zy.values .= v1.zy.values .+ v2.zy.values
+    out.zz.values .= v1.zz.values .+ v2.zz.values
+
+    out
+end
+Base.:-(v1::AbstractTensorField, v2::AbstractTensorField) = begin
+    out = TensorField(v1.mesh)
+    out.xx.values .= v1.xx.values .- v2.xx.values
+    out.xy.values .= v1.xy.values .- v2.xy.values
+    out.xz.values .= v1.xz.values .- v2.xz.values
+
+    out.yx.values .= v1.yx.values .- v2.yx.values
+    out.yy.values .= v1.yy.values .- v2.yy.values
+    out.yz.values .= v1.yz.values .- v2.yz.values
+
+    out.zx.values .= v1.zx.values .- v2.zx.values
+    out.zy.values .= v1.zy.values .- v2.zy.values
+    out.zz.values .= v1.zz.values .- v2.zz.values
+
+    out
+end
 Base.length(t::AbstractTensorField) = length(t.xx)
 Base.eachindex(t::AbstractTensorField) = eachindex(t.xx)
 KA.get_backend(t::AbstractTensorField) = KA.get_backend(t.xx)
@@ -351,6 +382,8 @@ struct T{F<:AbstractField} # Needs to be abstractTensor type
     parent::F
 end
 Adapt.@adapt_structure T
+
+Base.length(t::T) = length(t.parent)
 Base.getindex(t::T{F}, i::Integer) where F<:TensorField = begin # type calls need sorting
     T = t.parent
     Tf = eltype(T.xx.values)
@@ -366,7 +399,13 @@ Base.getindex(t::T{F}, i::Integer) where F<:TensorField = begin # type calls nee
         T.zz[i],
         )
 end
-
+Base.getindex(t::T{F}, i::Integer) where F<:AbstractVectorField = begin
+    return t.parent[i]'
+end
+Base.setindex!(t::T{F}, val, i::Integer) where F<:AbstractVectorField = begin
+    # val' turns a row-vector input back into a column vector
+    t.parent[i] = val'
+end
 struct Vorticity{TU, GT} <: AbstractTensorField 
     U::TU
     gradU::GT 

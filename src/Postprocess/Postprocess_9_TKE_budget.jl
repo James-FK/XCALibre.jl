@@ -20,17 +20,27 @@ export TKEBudget
     kf::T7
     gradk::Grad{<:Any}
     gradkf::T8
+    τ::T4
+    τmean::T4
+    τfluc::T4
+    τflucgradUfluc::T3
+    Ufluc::T1
+    Uflucτfluc::T1
+    Uflucτflucf::T5
+    convection::T3
     production::T3
     diffusion_pressure::T3
     diffusion_turbulent::T3
     diffusion_viscous::T3
+    diffusion_SGS::T3
     dissipation::T3
+    dissipation_SGS::T3
     start::Union{Real,Nothing}
     stop::Union{Real,Nothing}
     update_interval::Union{Real,Nothing}
 end
 function TKEBudget(field;
-    names::Vector = ["production", "diffusion_pressure", "diffusion_turbulent","diffusion_viscous", "dissipation"],
+    names::Vector = ["convection","production", "diffusion_pressure", "diffusion_turbulent","diffusion_viscous","diffusion_SGS", "dissipation", "dissipation_SGS"],
     start::Union{Real,Nothing}=nothing,
     stop::Union{Real,Nothing}=nothing,
     update_interval::Union{Real,Nothing}=nothing)
@@ -54,11 +64,20 @@ function TKEBudget(field;
         kf = FaceScalarField(field.mesh)
         gradk = Grad{Gauss}(ScalarField(field.mesh))
         gradkf = FaceVectorField(field.mesh)
+        τ = SymmetricTensorField(field.mesh)
+        τmean = SymmetricTensorField(field.mesh)
+        τfluc = SymmetricTensorField(field.mesh)
+        τflucgradUfluc = ScalarField(field.mesh)
+        Ufluc = VectorField(field.mesh)
+        Uflucτfluc = VectorField(field.mesh)
+        convection = ScalarField(field.mesh)
         production = ScalarField(field.mesh)
         diffusion_pressure = ScalarField(field.mesh)
         diffusion_turbulent = ScalarField(field.mesh)
         diffusion_viscous = ScalarField(field.mesh)
+        diffusion_SGS = ScalarField(field.mesh)
         dissipation = ScalarField(field.mesh)
+        dissipation_SGS = ScalarField(field.mesh)
 
     else
         throw(ArgumentError("Unsupported field type: $(typeof(field))"))
@@ -82,11 +101,21 @@ function TKEBudget(field;
         kf = kf,
         gradk = gradk,
         gradkf = gradkf,
+        τ = τ,
+        τmean = τmean,
+        τfluc = τfluc,
+        τflucgradUfluc = τflucgradUfluc,
+        Ufluc = Ufluc,
+        Uflucτfluc = Uflucτfluc, 
+        Uflucτflucf = Uflucτflucf, 
+        convection = convection,
         production = production,
         diffusion_pressure = diffusion_pressure,
         diffusion_turbulent = diffusion_turbulent,
         diffusion_viscous = diffusion_viscous,
+        diffusion_SGS = diffusion_SGS,
         dissipation = dissipation,
+        dissipation_SGS = dissipation_SGS,
         start = start,
         stop = stop,
         update_interval = update_interval
@@ -94,14 +123,16 @@ function TKEBudget(field;
 end
 
 
-function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Integer,config,Str,model,time)
+function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Integer,config,S,model,time)
     if must_calculate(tke,iter,n_iterations)
         n = div(iter - tke.start,tke.update_interval) + 1
         U = model.momentum.U
         p = model.momentum.p
-        gradU = Str.gradU.result
+        nu = model.fluid.nu.values
+        nut = model.turbulence.nut
+        gradU = S.gradU.result
 
-        ###### The production term = − ⟨u'ᵢu'ⱼ⟩⟨∂u'ᵢ/∂xⱼ⟩  ###### 
+        ###### The production term = − ⟨u'ᵢu'ⱼ⟩⟨∂Uᵢ/∂xⱼ⟩  ###### 
 
         _update_running_mean!(tke.meanU, U, n) #update ⟨Uᵢ⟩
         _update_running_mean!(tke.meanUU,U,n) #update ⟨UᵢUⱼ⟩ 
@@ -121,21 +152,30 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
 
         ###### The Dissipation term  = -ν⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ ######
 
-        # this term is calculated using the reynolds decomposition ⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ = ⟨∂Uᵢ/∂xⱼ ∂Uᵢ/∂xⱼ⟩ − ⟨∂Uᵢ/∂xⱼ⟩ ⟨∂Uᵢ/∂xⱼ⟩
+        # # this term is calculated using the reynolds decomposition ⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ = ⟨∂Uᵢ/∂xⱼ ∂Uᵢ/∂xⱼ⟩ − ⟨∂Uᵢ/∂xⱼ⟩ ⟨∂Uᵢ/∂xⱼ⟩
 
-        #I need to calculate the mean of gradU squared and the mean of gradU 
-        magnitude2!(tke.gradU2, gradU, config) #current value of gradU squared store in DR.GradU2
+        # #I need to calculate the mean of gradU squared and the mean of gradU 
+        # magnitude2!(tke.gradU2, gradU, config) #current value of gradU squared store in DR.GradU2
 
-        #update running mean of gradU squared
-        _update_running_mean!(tke.meangradU2, tke.gradU2,n)
+        # #update running mean of gradU squared
+        # _update_running_mean!(tke.meangradU2, tke.gradU2,n)
 
-        #now calculate the dissipation rate and store 
-        magnitude2!(tke.dissipation, tke.meangradU, config; scale_factor = -1.0) # this calculates -1 * the magnitude of of time averaged gradU
+        # #now calculate the dissipation rate and store 
+        # magnitude2!(tke.dissipation, tke.meangradU, config; scale_factor = -1.0) # this calculates -1 * the magnitude of of time averaged gradU
 
-        #⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ is the sum of mean(gradU²) - mean(gradU)²
-        @. tke.dissipation.values += tke.meangradU2.values
-        #finally scale by -ν to get the dissipation term
-        @. tke.dissipation.values *= (-1 * model.fluid.nu.values)
+        # #⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ is the sum of mean(gradU²) - mean(gradU)²
+        # @. tke.dissipation.values += tke.meangradU2.values
+        # #finally scale by -ν to get the dissipation term
+        # @. tke.dissipation.values *= (-1 * model.fluid.nu.values)
+
+        ### Trying out new method first get ∂u'ᵢ/∂xⱼ then contract then time average 
+
+        # first get ∂u'ᵢ/∂xⱼ = ∂Uᵢ/∂xⱼ - ⟨∂Uᵢ/∂xⱼ⟩
+        tke.gradUfluc = gradU - tke.meangradU
+        #double contraction 
+        magnitude2!(tke.gradU2,tke.gradUfluc, config; scale_factor = (-nu))
+        _update_running_mean!(tke.dissipation, tke.gradU2,n)
+
 
 
         ###### The Diffusion terms ######  
@@ -178,9 +218,9 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         div!(tke.diffusion_turbulent,tke.meanuiuiujf,config)
         #finally scale by -1/2
         @. tke.diffusion_turbulent.values *= -0.5
+
         ## Diffusion due to viscosity ##
 
-        
         # get k from the 1/2 the trace of the reynolds stress tensor
         @. tke.k.values = 0.5 * (tke.rst.xx.values + tke.rst.yy.values + tke.rst.zz.values )
         #now just need the laplacian of k 
@@ -191,7 +231,28 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         #finally just calculate divergence of grad k 
         interpolate!(tke.gradkf,tke.gradk.result,config)
         div!(tke.diffusion_viscous,tke.gradkf,config)
+
         @. tke.diffusion_viscous.values = tke.diffusion_viscous.values * model.fluid.nu.values
+        
+
+
+        ## Subgrid scale contributions to budget in case of LES ##
+
+        # first compute the SGS dissipation as ϵ_SGS = ⟨ τ'ᵢⱼ ∂u'ᵢ/∂xⱼ ⟩
+        elementwise_multiply!(tke.τ,S,nut,config;scale_factor = -2) #first evaluate τᵢⱼ = -2νₜ Sᵢⱼ
+        _update_running_mean!(tke.τmean,tke.τ,n) # mean of τᵢⱼ is required for the fluctuation τ'ᵢⱼ
+        tke.τfluc .= tke.τ - tke.τmean
+        double_inner_product!(tke.τflucgradUfluc,tke.τfluc,tke.gradUfluc,config)
+        _update_running_mean!(tke.dissipation_SGS,tke.τflucgradUfluc,n)
+
+
+        # the contribution of SGS to diffusion is ∂/∂xⱼ⟨u'ᵢτ'ᵢⱼ⟩
+        # need the full fluctuations 
+        tke.Ufluc = U - tke.meanU
+        elementwise_multiply!(T(tke.Uflucτfluc),T(tke.Ufluc),tke.τfluc,config)
+        interpolate!(tke.Uflucτflucf,tke.Uflucτfluc,config)
+        div!(tke.diffusion_SGS,tke.τflucgradUflucf,config)
+
 
     end
 
@@ -275,11 +336,21 @@ function convert_time_to_iterations(tke::TKEBudget, model, dt, iterations)
         kf = tke.kf,
         gradk = tke.gradk,
         gradkf = tke.gradkf,
+        τ = tke.τ,
+        τmean = tke.τmean,
+        τfluc = tke.τfluc,
+        τflucgradUfluc = tke.τflucgradUfluc,
+        Ufluc = tke.Ufluc,
+        Uflucτfluc = tke.Uflucτfluc, 
+        Uflucτflucf = tke.Uflucτflucf, 
+        convection = tke.convection,
         production = tke.production,
         diffusion_pressure = tke.diffusion_pressure,
         diffusion_turbulent = tke.diffusion_turbulent,
         diffusion_viscous = tke.diffusion_viscous,
+        diffusion_SGS = tke.diffusion_SGS,
         dissipation = tke.dissipation,
+        dissipation_SGS = tke.dissipation_SGS,
         start = start,
         stop = stop,
         update_interval = update_interval
