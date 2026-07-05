@@ -21,6 +21,24 @@ end
     # end
 end
 
+inner_product!(S::F, ∇1::VectorField, ∇2::VectorField, config) where F<:ScalarField = begin
+    (; hardware) = config
+    (; backend, workgroup) = hardware
+
+    ndrange = length(S)
+    kernel! = _inner_product!(_setup(backend, workgroup, ndrange)...)
+    kernel!(S, ∇1, ∇2)
+    # KernelAbstractions.synchronize(backend)
+end
+
+@kernel function _inner_product!(S::F, ∇1::VectorField, ∇2::VectorField) where F<:ScalarField
+    i = @index(Global)
+    @uniform values = S.values
+    # for i ∈ eachindex(S.values)
+        values[i] = ∇1[i]⋅∇2[i]
+    # end
+end
+
 double_inner_product!(S::F, T::AbstractTensorField, R::AbstractTensorField,config; scale_factor=1.0) where F<:ScalarField = begin
     (; hardware) = config
     (; backend, workgroup) = hardware

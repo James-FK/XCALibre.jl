@@ -1,7 +1,7 @@
 export TKEBudget
 
 @kwdef struct TKEBudget{V<:AbstractVector, T1<:AbstractVectorField, T2<:AbstractField, T3<:AbstractScalarField,
-    T4<:AbstractField, T5<:AbstractField, T6<:AbstractField, T7<:AbstractField, T8<:AbstractField}
+    T4<:AbstractField, T5<:AbstractField,  T7<:AbstractField, T8<:AbstractField}
     names::V
     meanU::T1
     meanUU::T2
@@ -14,18 +14,19 @@ export TKEBudget
     meanUiUiUj::T1
     meanuiuiuj::T1
     meanuiuiujf::T5
-    gradU2::T3
-    meangradU2::T6
+    gradUfluc::T4
+    gradUfluc2::T3
     k::T3
     kf::T7
     gradk::Grad{<:Any}
     gradkf::T8
-    τ::T4
-    τmean::T4
-    τfluc::T4
+    τ::T2
+    τmean::T2
+    τfluc::T2
     τflucgradUfluc::T3
     Ufluc::T1
     Uflucτfluc::T1
+    meanUflucτfluc::T1
     Uflucτflucf::T5
     convection::T3
     production::T3
@@ -58,8 +59,8 @@ function TKEBudget(field;
         meanUiUiUj = VectorField(field.mesh)
         meanuiuiuj = VectorField(field.mesh)
         meanuiuiujf = FaceVectorField(field.mesh)
-        gradU2 = ScalarField(field.mesh)
-        meangradU2 = ScalarField(field.mesh)
+        gradUfluc = TensorField(field.mesh)
+        gradUfluc2 = ScalarField(field.mesh)
         k = ScalarField(field.mesh)
         kf = FaceScalarField(field.mesh)
         gradk = Grad{Gauss}(ScalarField(field.mesh))
@@ -70,6 +71,8 @@ function TKEBudget(field;
         τflucgradUfluc = ScalarField(field.mesh)
         Ufluc = VectorField(field.mesh)
         Uflucτfluc = VectorField(field.mesh)
+        meanUflucτfluc = VectorField(field.mesh)
+        Uflucτflucf = FaceVectorField(field.mesh)
         convection = ScalarField(field.mesh)
         production = ScalarField(field.mesh)
         diffusion_pressure = ScalarField(field.mesh)
@@ -95,8 +98,8 @@ function TKEBudget(field;
         meanUiUiUj = meanUiUiUj,
         meanuiuiuj = meanuiuiuj,
         meanuiuiujf = meanuiuiujf,
-        gradU2 = gradU2,
-        meangradU2 = meangradU2,
+        gradUfluc = gradUfluc,
+        gradUfluc2 = gradUfluc2,
         k = k,
         kf = kf,
         gradk = gradk,
@@ -107,6 +110,7 @@ function TKEBudget(field;
         τflucgradUfluc = τflucgradUfluc,
         Ufluc = Ufluc,
         Uflucτfluc = Uflucτfluc, 
+        meanUflucτfluc = meanUflucτfluc,
         Uflucτflucf = Uflucτflucf, 
         convection = convection,
         production = production,
@@ -152,29 +156,19 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
 
         ###### The Dissipation term  = -ν⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ ######
 
-        # # this term is calculated using the reynolds decomposition ⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ = ⟨∂Uᵢ/∂xⱼ ∂Uᵢ/∂xⱼ⟩ − ⟨∂Uᵢ/∂xⱼ⟩ ⟨∂Uᵢ/∂xⱼ⟩
-
-        # #I need to calculate the mean of gradU squared and the mean of gradU 
-        # magnitude2!(tke.gradU2, gradU, config) #current value of gradU squared store in DR.GradU2
-
-        # #update running mean of gradU squared
-        # _update_running_mean!(tke.meangradU2, tke.gradU2,n)
-
-        # #now calculate the dissipation rate and store 
-        # magnitude2!(tke.dissipation, tke.meangradU, config; scale_factor = -1.0) # this calculates -1 * the magnitude of of time averaged gradU
-
-        # #⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ is the sum of mean(gradU²) - mean(gradU)²
-        # @. tke.dissipation.values += tke.meangradU2.values
-        # #finally scale by -ν to get the dissipation term
-        # @. tke.dissipation.values *= (-1 * model.fluid.nu.values)
-
-        ### Trying out new method first get ∂u'ᵢ/∂xⱼ then contract then time average 
-
         # first get ∂u'ᵢ/∂xⱼ = ∂Uᵢ/∂xⱼ - ⟨∂Uᵢ/∂xⱼ⟩
-        tke.gradUfluc = gradU - tke.meangradU
+        @. tke.gradUfluc.xx.values = gradU.xx.values - tke.meangradU.xx.values
+        @. tke.gradUfluc.xy.values = gradU.xy.values - tke.meangradU.xy.values
+        @. tke.gradUfluc.xz.values = gradU.xz.values - tke.meangradU.xz.values
+        @. tke.gradUfluc.yx.values = gradU.yx.values - tke.meangradU.yx.values
+        @. tke.gradUfluc.yy.values = gradU.yy.values - tke.meangradU.yy.values
+        @. tke.gradUfluc.yz.values = gradU.yz.values - tke.meangradU.yz.values
+        @. tke.gradUfluc.zx.values = gradU.zx.values - tke.meangradU.zx.values
+        @. tke.gradUfluc.zy.values = gradU.zy.values - tke.meangradU.zy.values
+        @. tke.gradUfluc.zz.values = gradU.zz.values - tke.meangradU.zz.values
         #double contraction 
-        magnitude2!(tke.gradU2,tke.gradUfluc, config; scale_factor = (-nu))
-        _update_running_mean!(tke.dissipation, tke.gradU2,n)
+        magnitude2!(tke.gradUfluc2,tke.gradUfluc, config; scale_factor = (-nu))
+        _update_running_mean!(tke.dissipation, tke.gradUfluc2,n)
 
 
 
@@ -192,8 +186,8 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         #divergence of ⟨u'p'⟩
         interpolate!(tke.meanpUflucf,tke.meanpUfluc,config)
         div!(tke.diffusion_pressure,tke.meanpUflucf,config)
-        #finally scale by the density 
-        @. tke.diffusion_pressure.values = -tke.diffusion_pressure.values / model.fluid.rho.values
+        #finally scale by -1
+        @. tke.diffusion_pressure.values = -tke.diffusion_pressure.values
         ## Diffusion due to fluctuations ## 
 
         #update mean of ⟨UᵢUᵢUⱼ⟩
@@ -238,22 +232,34 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
 
         ## Subgrid scale contributions to budget in case of LES ##
 
-        # first compute the SGS dissipation as ϵ_SGS = ⟨ τ'ᵢⱼ ∂u'ᵢ/∂xⱼ ⟩
-        elementwise_multiply!(tke.τ,S,nut,config;scale_factor = -2) #first evaluate τᵢⱼ = -2νₜ Sᵢⱼ
+        # first compute the SGS dissipation as ϵ_SGS = -⟨ τ'ᵢⱼ ∂u'ᵢ/∂xⱼ ⟩
+        elementwise_multiply!(tke.τ,nut,S,config;scale_factor = -2) #first evaluate τᵢⱼ = -2νₜ Sᵢⱼ
         _update_running_mean!(tke.τmean,tke.τ,n) # mean of τᵢⱼ is required for the fluctuation τ'ᵢⱼ
-        tke.τfluc .= tke.τ - tke.τmean
-        double_inner_product!(tke.τflucgradUfluc,tke.τfluc,tke.gradUfluc,config)
+
+        @. tke.τfluc.xx.values = tke.τ.xx.values - tke.τmean.xx.values
+        @. tke.τfluc.xy.values = tke.τ.xy.values - tke.τmean.xy.values
+        @. tke.τfluc.xz.values = tke.τ.xz.values - tke.τmean.xz.values
+        @. tke.τfluc.yy.values = tke.τ.yy.values - tke.τmean.yy.values
+        @. tke.τfluc.yz.values = tke.τ.yz.values - tke.τmean.yz.values
+        @. tke.τfluc.zz.values = tke.τ.zz.values - tke.τmean.zz.values
+
+        double_inner_product!(tke.τflucgradUfluc,tke.τfluc,tke.gradUfluc,config; scale_factor=-1)
         _update_running_mean!(tke.dissipation_SGS,tke.τflucgradUfluc,n)
 
 
         # the contribution of SGS to diffusion is ∂/∂xⱼ⟨u'ᵢτ'ᵢⱼ⟩
         # need the full fluctuations 
-        tke.Ufluc = U - tke.meanU
+        @. tke.Ufluc.x.values = U.x.values - tke.meanU.x.values
+        @. tke.Ufluc.y.values = U.y.values - tke.meanU.y.values
+        @. tke.Ufluc.z.values = U.z.values - tke.meanU.z.values
+     
         elementwise_multiply!(T(tke.Uflucτfluc),T(tke.Ufluc),tke.τfluc,config)
-        interpolate!(tke.Uflucτflucf,tke.Uflucτfluc,config)
-        div!(tke.diffusion_SGS,tke.τflucgradUflucf,config)
+        _update_running_mean!(tke.meanUflucτfluc,tke.Uflucτfluc,n)
+        interpolate!(tke.Uflucτflucf,tke.meanUflucτfluc,config)
+        div!(tke.diffusion_SGS,tke.Uflucτflucf,config)
 
-
+        ## The convection term ## 
+        inner_product!(tke.convection,tke.meanU,tke.gradk.result,config)
     end
 
     return nothing
@@ -330,8 +336,8 @@ function convert_time_to_iterations(tke::TKEBudget, model, dt, iterations)
         meanUiUiUj = tke.meanUiUiUj,
         meanuiuiuj = tke.meanuiuiuj,
         meanuiuiujf = tke.meanuiuiujf,
-        gradU2 = tke.gradU2,
-        meangradU2 = tke.meangradU2,
+        gradUfluc = tke.gradUfluc,
+        gradUfluc2 = tke.gradUfluc2,
         k = tke.k,
         kf = tke.kf,
         gradk = tke.gradk,
@@ -342,6 +348,7 @@ function convert_time_to_iterations(tke::TKEBudget, model, dt, iterations)
         τflucgradUfluc = tke.τflucgradUfluc,
         Ufluc = tke.Ufluc,
         Uflucτfluc = tke.Uflucτfluc, 
+        meanUflucτfluc = tke.meanUflucτfluc,
         Uflucτflucf = tke.Uflucτflucf, 
         convection = tke.convection,
         production = tke.production,
