@@ -3,6 +3,7 @@ export TKEBudget
 @kwdef struct TKEBudget{V<:AbstractVector, T1<:AbstractVectorField, T2<:AbstractField, T3<:AbstractScalarField,
     T4<:AbstractField, T5<:AbstractField,  T7<:AbstractField, T8<:AbstractField}
     names::V
+    wall_IDs_range::UnitRange{Int64}
     meanU::T1
     meanUU::T2
     rst::T2
@@ -40,12 +41,18 @@ export TKEBudget
     stop::Union{Real,Nothing}
     update_interval::Union{Real,Nothing}
 end
-function TKEBudget(field;
+function TKEBudget(field,BCs;
     names::Vector = ["convection","production", "diffusion_pressure", "diffusion_turbulent","diffusion_viscous","diffusion_SGS", "dissipation", "dissipation_SGS"],
     start::Union{Real,Nothing}=nothing,
     stop::Union{Real,Nothing}=nothing,
     update_interval::Union{Real,Nothing}=nothing)
-
+    wall_IDs_range = 0
+    UBCs = BCs.U
+    for b in UBCs
+        if b isa Wall
+            wall_IDs_range = b.IDs_range
+        end
+    end
 
     if field isa VectorField
         meanU = VectorField(field.mesh)
@@ -87,6 +94,7 @@ function TKEBudget(field;
     end
         return TKEBudget(
         names = names,
+        wall_IDs_range = wall_IDs_range,
         meanU = meanU,
         meanUU = meanUU,
         rst = rst,
@@ -136,7 +144,6 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         nut = model.turbulence.nut
         gradU = S.gradU.result
         UBCs = config.boundaries.U
-        pBCs = config.boundaries.p
         ###### The production term = − ⟨u'ᵢu'ⱼ⟩⟨∂Uᵢ/∂xⱼ⟩  ###### 
 
         _update_running_mean!(tke.meanU, U, n) #update ⟨Uᵢ⟩
@@ -223,12 +230,13 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         #now just need the laplacian of k 
         # gradk = Grad{Gauss}(tke.k) # this needs to be done outside the loop
         interpolate!(tke.kf,tke.k,config)
-        correct_boundaries!(tke.kf,tke.k,pBCs,time,config)
+        wall_correction!(tke.kf,tke.wall_IDs_range,config)
         green_gauss!(tke.gradk,tke.kf,config) #calculate gradk
 
         #finally just calculate divergence of grad k 
         interpolate!(tke.gradkf,tke.gradk.result,config)
-        correct_boundaries!(tke.gradkf,tke.gradk.result,UBCs,time,config)
+
+        correct_gradient!(tke.gradkf, tke.k, 0.0, tke.wall_IDs_range, config)
         div!(tke.diffusion_viscous,tke.gradkf,config)
 
         @. tke.diffusion_viscous.values = tke.diffusion_viscous.values * model.fluid.nu.values
@@ -331,6 +339,7 @@ function convert_time_to_iterations(tke::TKEBudget, model, dt, iterations)
 
     return TKEBudget(
         names = tke.names,
+        wall_IDs_range = tke.wall_IDs_range,
         meanU = tke.meanU,
         meanUU = tke.meanUU,
         rst = tke.rst,

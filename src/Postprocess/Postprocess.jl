@@ -20,6 +20,7 @@ using XCALibre.Solve
 
 include("Postprocess_functions.jl")
 include("Postprocess_0_field_average.jl")
+include("Postprocess_00_TKE_functions.jl")
 include("Postprocess_1_field_rms.jl")
 include("Postprocess_2_reynolds_stress_tensor.jl")
 include("Postprocess_3_Q-Criterion.jl")
