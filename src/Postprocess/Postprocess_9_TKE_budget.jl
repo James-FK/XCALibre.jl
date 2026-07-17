@@ -135,7 +135,8 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         nu = model.fluid.nu.values
         nut = model.turbulence.nut
         gradU = S.gradU.result
-
+        UBCs = config.boundaries.U
+        pBCs = config.boundaries.p
         ###### The production term = − ⟨u'ᵢu'ⱼ⟩⟨∂Uᵢ/∂xⱼ⟩  ###### 
 
         _update_running_mean!(tke.meanU, U, n) #update ⟨Uᵢ⟩
@@ -158,7 +159,7 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
 
         # first get ∂u'ᵢ/∂xⱼ = ∂Uᵢ/∂xⱼ - ⟨∂Uᵢ/∂xⱼ⟩
         @. tke.gradUfluc.xx.values = gradU.xx.values - tke.meangradU.xx.values
-        @. tke.gradUfluc.xy.values = gradU.xy.values - tke.meangradU.xy.values
+        @. tke.gradUfluc.xy.values = gradU.xy.values - tke.meangradU.xy.values    
         @. tke.gradUfluc.xz.values = gradU.xz.values - tke.meangradU.xz.values
         @. tke.gradUfluc.yx.values = gradU.yx.values - tke.meangradU.yx.values
         @. tke.gradUfluc.yy.values = gradU.yy.values - tke.meangradU.yy.values
@@ -185,6 +186,7 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         tke.meanpUfluc.z.values .= meanpUflucf.z.values
         #divergence of ⟨u'p'⟩
         interpolate!(tke.meanpUflucf,tke.meanpUfluc,config)
+        correct_boundaries!(tke.meanpUflucf,tke.meanpUfluc,UBCs,time,config)
         div!(tke.diffusion_pressure,tke.meanpUflucf,config)
         #finally scale by -1
         @. tke.diffusion_pressure.values = -tke.diffusion_pressure.values
@@ -209,6 +211,7 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
                                         - 2 * (tke.meanU.x.values * tke.meanUU.xz.values + tke.meanU.y.values * tke.meanUU.yz.values + tke.meanU.z.values * tke.meanUU.zz.values)
                                         + 2 * (tke.meanU.x.values^2 + tke.meanU.y.values^2 + tke.meanU.z.values^2) * tke.meanU.z.values)
         interpolate!(tke.meanuiuiujf,tke.meanuiuiuj,config)
+        correct_boundaries!(tke.meanuiuiujf,tke.meanuiuiuj,UBCs,time,config)
         div!(tke.diffusion_turbulent,tke.meanuiuiujf,config)
         #finally scale by -1/2
         @. tke.diffusion_turbulent.values *= -0.5
@@ -220,10 +223,12 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         #now just need the laplacian of k 
         # gradk = Grad{Gauss}(tke.k) # this needs to be done outside the loop
         interpolate!(tke.kf,tke.k,config)
+        correct_boundaries!(tke.kf,tke.k,pBCs,time,config)
         green_gauss!(tke.gradk,tke.kf,config) #calculate gradk
 
         #finally just calculate divergence of grad k 
         interpolate!(tke.gradkf,tke.gradk.result,config)
+        correct_boundaries!(tke.gradkf,tke.gradk.result,UBCs,time,config)
         div!(tke.diffusion_viscous,tke.gradkf,config)
 
         @. tke.diffusion_viscous.values = tke.diffusion_viscous.values * model.fluid.nu.values
@@ -256,6 +261,7 @@ function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Inte
         elementwise_multiply!(T(tke.Uflucτfluc),T(tke.Ufluc),tke.τfluc,config)
         _update_running_mean!(tke.meanUflucτfluc,tke.Uflucτfluc,n)
         interpolate!(tke.Uflucτflucf,tke.meanUflucτfluc,config)
+        correct_boundaries!(tke.Uflucτflucf,tke.meanUflucτfluc,UBCs,time,config)
         div!(tke.diffusion_SGS,tke.Uflucτflucf,config)
 
         ## The convection term ## 
