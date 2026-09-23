@@ -204,7 +204,8 @@ wall_shear_stress(patch::Symbol, model,config)  = begin
     # Line below needs to change to do selection based on nut BC
     turbulence = model.turbulence
     UBCs = config.boundaries.U
-    typeof(turbulence) <: Laminar ? nut = ConstantScalar(0.0) : nut = model.turbulence.nut
+    # use face eddy viscosity (wall BC applied) for consistency with the momentum wall flux
+    typeof(turbulence) <: Laminar ? nutf = ConstantScalar(0.0) : nutf = model.turbulence.nutf
     mesh = model.domain
     (; nu) = model.fluid
     (; U) = model.momentum
@@ -232,18 +233,18 @@ wall_shear_stress(patch::Symbol, model,config)  = begin
     pos = adapt(config.hardware.backend,fill(SVector{3,Float64}(0,0,0), length(IDs_range)))
     ndrange = length(tauw)
     kernel! = _wall_shear_stress!(_setup(backend, workgroup, ndrange)...)
-    kernel!(tauw,IDs_range,boundary_cellsID,faces,nut,nu,pos)
-    
+    kernel!(tauw,IDs_range,boundary_cellsID,faces,nutf,nu,pos)
+
     return tauw, pos
 end
 
-@kernel function _wall_shear_stress!(tauw,IDs_range,boundary_cellsID,faces,nut,nu,pos)
+@kernel function _wall_shear_stress!(tauw,IDs_range,boundary_cellsID,faces,nutf,nu,pos)
     i = @index(Global)
     fID = IDs_range[i]
     cID = boundary_cellsID[fID]
     face = faces[fID]
-    nueff = nu[cID]  + nut[cID]
-    tauw.x[i] *= nueff # this may need using νtf? (wall funcs)
+    nueff = nu[cID]  + nutf[fID]
+    tauw.x[i] *= nueff
     tauw.y[i] *= nueff
     tauw.z[i] *= nueff
     pos[i] = face.centre
