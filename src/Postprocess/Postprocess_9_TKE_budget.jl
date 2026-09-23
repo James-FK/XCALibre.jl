@@ -102,7 +102,10 @@ end
 
 # Only raw moments are accumulated every sample. Fluctuation statistics are recovered exactly
 # from them, e.g. ⟨∂u'ᵢ/∂xⱼ ∂u'ᵢ/∂xⱼ⟩ = ⟨∂Uᵢ/∂xⱼ ∂Uᵢ/∂xⱼ⟩ - ⟨∂Uᵢ/∂xⱼ⟩⟨∂Uᵢ/∂xⱼ⟩, so the budget terms
-# are only evaluated on iterations where they are written out
+# are only evaluated on iterations where they are written out.
+# Every term is written as a right-hand-side contribution to ∂k/∂t, so for a statistically
+# steady flow the residual is the sum of all eight terms
+# 0 = C + P + Πₚ + Tₜ + Dᵥ + D_SGS + ϵ + ϵ_SGS
 function runtime_postprocessing!(tke::TKEBudget,iter::Integer,n_iterations::Integer,config,S,model,time)
     if must_calculate(tke,iter,n_iterations)
         n = div(iter - tke.start,tke.update_interval) + 1
@@ -221,11 +224,11 @@ function compute_budget_terms!(tke::TKEBudget, config, model, time)
 
     ## Subgrid scale contributions to budget in case of LES ##
 
-    # ϵ_SGS = -⟨τ'ᵢⱼ ∂u'ᵢ/∂xⱼ⟩ = -(⟨τᵢⱼ ∂Uᵢ/∂xⱼ⟩ - ⟨τᵢⱼ⟩⟨∂Uᵢ/∂xⱼ⟩)
+    # ϵ_SGS = ⟨τ'ᵢⱼ ∂u'ᵢ/∂xⱼ⟩ = ⟨τᵢⱼ ∂Uᵢ/∂xⱼ⟩ - ⟨τᵢⱼ⟩⟨∂Uᵢ/∂xⱼ⟩ (a sink, like the viscous dissipation)
     double_inner_product!(tke.dissipation_SGS, tke.τmean, tke.meangradU, config)
-    @. tke.dissipation_SGS.values = tke.dissipation_SGS.values - tke.meanτgradU.values
+    @. tke.dissipation_SGS.values = tke.meanτgradU.values - tke.dissipation_SGS.values
 
-    # the contribution of SGS to diffusion is ∂/∂xⱼ⟨u'ᵢτ'ᵢⱼ⟩, with ⟨u'ᵢτ'ᵢⱼ⟩ = ⟨Uᵢτᵢⱼ⟩ - ⟨Uᵢ⟩⟨τᵢⱼ⟩
+    # SGS diffusion = -∂⟨u'ᵢτ'ᵢⱼ⟩/∂xⱼ, with ⟨u'ᵢτ'ᵢⱼ⟩ = ⟨Uᵢτᵢⱼ⟩ - ⟨Uᵢ⟩⟨τᵢⱼ⟩
     elementwise_multiply!(T(tke.meanUflucτfluc),T(meanU),tke.τmean,config)
     @. tke.meanUflucτfluc.x.values = tke.meanUτ.x.values - tke.meanUflucτfluc.x.values
     @. tke.meanUflucτfluc.y.values = tke.meanUτ.y.values - tke.meanUflucτfluc.y.values
@@ -233,9 +236,11 @@ function compute_budget_terms!(tke::TKEBudget, config, model, time)
     interpolate!(tke.Uflucτflucf,tke.meanUflucτfluc,config)
     fluctuation_boundaries!(tke.Uflucτflucf,tke.meanUflucτfluc,UBCs,time,config)
     div!(tke.diffusion_SGS,tke.Uflucτflucf,config)
+    @. tke.diffusion_SGS.values = -tke.diffusion_SGS.values
 
-    ## The convection term = ⟨Uⱼ⟩∂k/∂xⱼ ##
+    ## The convection term = -⟨Uⱼ⟩∂k/∂xⱼ ##
     inner_product!(tke.convection,meanU,tke.gradk.result,config)
+    @. tke.convection.values = -tke.convection.values
     return nothing
 end
 
