@@ -37,19 +37,28 @@ function runtime_postprocessing!(avg::FieldAverageWSS{T,V,P,S},iter::Integer,n_i
         _update_running_mean!(avg.tauw.y.values,current_tauw.y.values,n)
         _update_running_mean!(avg.tauw.z.values,current_tauw.z.values,n)
     end
-    if iter == n_iterations
+    # write alongside the field output (same condition as the solvers)
+    write_interval = config.runtime.write_interval
+    if iter%write_interval + signbit(write_interval) == 0
         shear = adapt(CPU(), avg.tauw)
         pos = adapt(CPU(), wall_shear_stress(avg.patch, model,config)[2])
-        open("ShearStress.txt", "w") do io
-        for (i, p) in enumerate(pos)
-            println(io,
-                p[1], ' ', p[2], ' ', p[3], ' ',
-                shear.x.values[i], ' ', shear.y.values[i], ' ', shear.z.values[i]
-            )
+        open("ShearStress_$(_time_label(iter, time)).txt", "w") do io
+            for (i, p) in enumerate(pos)
+                println(io,
+                    p[1], ' ', p[2], ' ', p[3], ' ',
+                    shear.x.values[i], ' ', shear.y.values[i], ' ', shear.z.values[i]
+                )
+            end
         end
-end
     end
     return nothing
+end
+
+# matches the OpenFOAM writer's time directory names (iteration for steady runs, else time to 8 d.p.)
+_time_label(iter, time) = begin
+    iter == time && return string(iter)
+    whole, frac = divrem(round(Int, time*1e8), 10^8)
+    return "$(whole).$(lpad(frac, 8, '0'))"
 end
 
 
