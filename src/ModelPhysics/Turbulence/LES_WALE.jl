@@ -135,7 +135,7 @@ function turbulence!(
         Sd = devB[i]
         #finally need a scalarfield based on the magnitudes 
         magSd = Sd⋅Sd
-        mag = magSd^3/2/(magS^5/4+magSd^5/4)
+        mag = magSd^1.5/(magS^2.5+magSd^1.25)
 
         nut[i] = Δ[i]*mag # Δ is (Cw*Δ)^2
     end
