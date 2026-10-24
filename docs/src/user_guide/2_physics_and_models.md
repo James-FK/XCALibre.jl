@@ -79,13 +79,14 @@ begin
 end
 ```
 
-From the subtype tree above, we can see that XCALibre.jl offers 2 major abstract fluid types, `AbstractIncompressible` and `AbstractCompressible`. There are 3 concrete fluid types:
+From the subtype tree above, we can see that XCALibre.jl offers 2 major abstract fluid types, `AbstractIncompressible` and `AbstractCompressible`. There are 4 concrete fluid types:
 
-- `Incompressible` - for simulations were the fluid density does not change with pressure
-- `WeaklyCompressible` - for simulation were the fluid density is allowed to change (no shockwaves)
-- `Compressible` - for simulations were discontinuities may appear (not available for general use yet)
+- `Incompressible` - for simulations where the fluid density does not change with pressure
+- `WeaklyCompressible` - for simulations where the fluid density is allowed to change (no shockwaves)
+- `Compressible` - for simulations where discontinuities may appear (not available for general use yet)
+- `SupersonicFlow` - for density-based compressible simulations, including supersonic flows with shockwaves
 
-To specify a given fluid type, the `Fluid` wrapper type is used as a general constructor which is specialised depending depending on the fluid type from the list above provided by the user. The constructors require the following inputs:
+To specify a given fluid type, the `Fluid` wrapper type is used as a general constructor which is specialised depending on the fluid type from the list above provided by the user. The constructors require the following inputs:
 
 For incompressible fluid flow
 ```julia
@@ -96,12 +97,18 @@ For compressible fluids (weak formulation)
 ```julia
 Fluid{WeaklyCompressible}(; nu, cp, gamma, Pr)
 ```
+
+For density-based compressible flow (Godunov-type explicit solver)
+```julia
+Fluid{SupersonicFlow}(; nu=1e-5, cp=1005.0, gamma=1.4, Pr=0.7)
+```
+
 where the input variables represent the following:
 
 - `nu` - kinematic viscosity
 - `rho` - fluid density
 - `gamma` - specific heat ratio
-- `Pr` - Prandlt number
+- `Pr` - Prandtl number
 - `cp` - specific heat at constant pressure
 
 For example, an incompressible fluid can be specified as follows
@@ -112,6 +119,73 @@ Physics(
     ...
 )
 ```
+
+For a density-based compressible simulation (dispatches to the GODUNOV solver)
+```julia
+Physics(
+    time = Transient(),
+    fluid = Fluid{SupersonicFlow}(nu=1e-5, cp=1005.0, gamma=1.4, Pr=0.7),
+    ...
+)
+```
+
+### Viscosity models
+
+For the compressible fluid types (`WeaklyCompressible` and `Compressible`), the `nu` keyword argument accepted by the `Fluid` constructor can be given either as a plain number or as a `Viscosity` model. This allows viscosity to be treated as fixed, or modelled as a function of the local temperature field. The viscosity models currently available, `ConstantViscosity` and `SutherlandViscosity`, are subtypes of `AbstractViscosityModel`:
+
+- `ConstantViscosity` - kinematic viscosity remains fixed at the value provided by the user (this is also what happens implicitly when `nu` is given as a plain number)
+- `SutherlandViscosity` - kinematic viscosity is recalculated every iteration from the local cell temperature `T` using Sutherland's law
+
+Below are three equivalent-in-spirit ways of specifying `nu`, illustrating each option.
+
+`nu` given as a `Float64` (simplest option, equivalent to a constant viscosity model)
+```julia
+Physics(
+    time = Steady(),
+    fluid = Fluid{WeaklyCompressible}(nu=1e-5, cp=1005.0, gamma=1.4, Pr=0.7),
+    turbulence = RANS{Laminar}(),
+    energy = Energy{SensibleEnthalpy}(Tref=300),
+    ...
+)
+```
+
+`nu` given explicitly as a `ConstantViscosity` model (using the `Viscosity` wrapper type)
+```julia
+Physics(
+    time = Steady(),
+    fluid = Fluid{WeaklyCompressible}(
+        nu = Viscosity{ConstantViscosity}(nu=1e-5),
+        cp = 1005.0, gamma = 1.4, Pr = 0.7
+        ),
+    turbulence = RANS{Laminar}(),
+    energy = Energy{SensibleEnthalpy}(Tref=300),
+    ...
+)
+```
+
+`nu` given as a `SutherlandViscosity` model, where viscosity is updated every iteration as a function of temperature
+```julia
+Physics(
+    time = Steady(),
+    fluid = Fluid{WeaklyCompressible}(
+        nu = Viscosity{SutherlandViscosity}(mu_ref=1.8e-5, T_ref=288.15, S=110.4),
+        cp = 1005.0, gamma = 1.4, Pr = 0.7
+        ),
+    turbulence = RANS{Laminar}(),
+    energy = Energy{SensibleEnthalpy}(Tref=300),
+    ...
+)
+```
+
+where the `SutherlandViscosity` coefficients are:
+
+- `mu_ref` - reference dynamic viscosity
+- `T_ref` - reference temperature
+- `S` - Sutherland constant
+
+!!! note
+
+    `SutherlandViscosity` depends on the local temperature field, therefore an active energy model (e.g. `Energy{SensibleEnthalpy}`) must be used alongside it.
 
 ## Turbulence models
 ---
@@ -145,6 +219,22 @@ RANS{KOmegaLKE}(; Tu::Number, walls::Tuple) # no defaults defined
 RANS{KOmegaLKE}(Tu = 0.01, walls=(:cylinder,)) # user should provide information for Tu and walls
 ```
 
+KOmegaSST model: the user must provide a tuple of symbols specifying wall boundaries; the model coefficients have defaults.
+```julia
+RANS{KOmegaSST}(walls=(:wall,))
+```
+
+#### Wall distance
+
+`KOmegaSST` and `KOmegaLKE` use the distance to the nearest wall, `y`, computed once when the run starts from the patches given in `walls`. The method is chosen with the `wall_distance` keyword:
+```julia
+RANS{KOmegaSST}(walls=(:wall,))                                      # MeshWave() (default)
+RANS{KOmegaSST}(walls=(:wall,), wall_distance=Poisson())             # Poisson distance
+RANS{KOmegaLKE}(Tu=0.01, walls=(:cylinder,), wall_distance=Poisson(iterations=2000))
+```
+- `MeshWave()`: each cell carries the location of its nearest wall point and the straight-line distance to it. Cells touching a wall start from the exact closest point on the wall faces through their nodes; sweeps over the internal faces then let each cell take a neighbour's wall point whenever it is closer, until no cell changes. Exact on meshes aligned with the walls and at convex corners, and works unchanged on distributed meshes.
+- `Poisson(; iterations=1000)`: y from the solution φ of ∇²φ = -1 with φ = 0 on the walls, y = -|∇φ| + √(|∇φ|² + 2φ). Exact for a single plane wall but inaccurate away from walls; it needs `y` entries in `solvers` and `schemes`.
+
 For example, a steady, incompressible simulation using the `KOmega` model can be specified as
 ```julia
 Physics(
@@ -167,6 +257,13 @@ Smagorinsky model: the standard model constant is passed by default. Boundary co
 LES{Smagorinsky}() # default constructor will use value below
 LES{Smagorinsky}(; C=0.15) # default value provided by default
 LES{Smagorinsky}(C=0.1) # user selected value
+```
+
+WALE model: the Wall-Adapting Local Eddy-viscosity model (Nicoud & Ducros, 1999), with the standard model constant passed by default. Unlike the Smagorinsky model, the eddy viscosity vanishes in pure shear and scales correctly near walls without the need for damping functions. Boundary conditions for `nut` must be provided, generally zero gradient conditions work well.
+```julia
+LES{WALE}() # default constructor will use value below
+LES{WALE}(; C=0.325) # default value provided by default
+LES{WALE}(C=0.5) # user selected value
 ```
 
 For example, an incompressible LES simulation with the `Smagorinsky` model can be specified as
@@ -294,11 +391,53 @@ DirichletFunction(name, func)
 ### `AbstractNeumann` conditions
 
 ```julia
-Extrapolated(name, value)
+Extrapolated(name)
 ```
 
 - `name` is a symbol providing the boundary name
-- `value` is a scalar defining the gradient normal to the boundary
+
+Assigns a zero-gradient condition semi-implicitly, using the cell-centre unknown
+together with the cell-centre value from the previous iteration.
+
+```julia
+Zerogradient(name)
+```
+
+- `name` is a symbol providing the boundary name
+
+Also assigns a zero-gradient condition, but explicitly: the gradient is set on
+the boundary faces directly. `Extrapolated` and `Zerogradient` therefore impose
+the same physical condition through different numerical routes.
+
+```julia
+FixedHeatFlux(name, value)
+```
+
+- `name` is a symbol providing the boundary name
+- `value` is the wall heat flux in W/m^2, **positive into the domain**
+
+Prescribes a wall heat flux on an energy field, for example
+
+```julia
+h = [
+    FixedHeatFlux(:heatedWall, 40_000.0),
+    Zerogradient(:outlet)
+]
+```
+
+The condition replaces the whole diffusive face term with the known flux, so it
+carries no dependence on the diffusion coefficient. That makes it valid for any
+of the energy formulations without modification: the energy equation is
+assembled as `- Laplacian(keff, he)` with `keff` scaled to whichever variable is
+being solved (`k/cp` for `SensibleEnthalpy`, `k/cv` for `InternalEnergy`), so
+the specific heat cancels and the prescribed value is the heat flux in W/m^2 in
+every case. Setting `value = 0` reduces exactly to `Zerogradient`.
+
+Note that prescribing the flux is not the same as resolving the wall
+temperature: on a wall-function mesh the near-wall thermal resistance is
+modelled rather than resolved, so a wall temperature recovered from the first
+cell inherits that treatment. Use `FixedTemperature` instead when the wall
+temperature is the quantity being imposed and the flux should follow.
 
 ### `AbstractPhysicalConstraint` conditions
 
@@ -316,6 +455,12 @@ RotatingWall
 `Symmetry` boundary condition can be used to assign a symmetry constraint to a given boundary patch in the domain. It can be used for both vector and scalar quantities.
 ```julia
 Symmetry(name)
+```
+- `name` is a symbol providing the boundary name
+
+`Slip` applies the same constraint as `Symmetry`: the patch is impermeable, so the face-normal component of a vector is removed, but both tangential components are retained and no tangential shear is exerted. Scalars receive an explicit zero-normal-gradient condition. Use it for symmetry planes, free-stream boundaries and inviscid walls. Use `Wall` instead when the patch should apply no-slip.
+```julia
+Slip(name)
 ```
 - `name` is a symbol providing the boundary name
 

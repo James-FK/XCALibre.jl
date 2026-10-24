@@ -19,10 +19,11 @@ struct Smagorinsky{S1,S2,C} <: AbstractLESModel
 end
 Adapt.@adapt_structure Smagorinsky
 
-struct SmagorinskyModel{T,D,S1}
+struct SmagorinskyModel{T,D,S1,WS}
     turbulence::T
     Δ::D 
     state::S1
+    wall_scratch::WS
 end
 Adapt.@adapt_structure SmagorinskyModel
 
@@ -37,7 +38,7 @@ end
 (les::LES{Smagorinsky, ARG})(mesh) where ARG = begin
     nut = ScalarField(mesh)
     nutf = FaceScalarField(mesh)
-    coeffs = les.args
+    coeffs = map(ScalarFloat(mesh), les.args)
     Smagorinsky(nut, nutf, coeffs)
 end
 
@@ -76,12 +77,13 @@ function initialise(
 
     delta!(Δ, mesh, config)
     (; coeffs) = model.turbulence
-    @. Δ.values = (Δ.values*coeffs.C)^2.0
+    @. Δ.values = (Δ.values*coeffs.C)^2
     
     return SmagorinskyModel(
         turbulence, 
         Δ, 
-        ModelState((), false)
+        ModelState((), false),
+        wall_scratch(mesh, boundaries, config)
     ), config
 end
 
@@ -107,10 +109,8 @@ function turbulence!(
     ) where {T,F,SO,M,Tu<:AbstractTurbulenceModel,E,D,BI}
 
     mesh = model.domain
-    scalar = ScalarFloat(mesh)
 
-    (; boundaries, hardware) = config
-    (; backend, workgroup) = hardware
+    (; boundaries) = config
     (; nut, nutf, coeffs) = les.turbulence
     (; U, Uf, gradU) = S
     (; Δ) = les
@@ -119,25 +119,46 @@ function turbulence!(
     grad!(gradU, Uf, U, boundaries.U, time, config) # update gradient (and S)
     limit_gradient!(config.schemes.U.limiter, gradU, U, config)
     
-    wk = _setup(backend, workgroup, length(nut))[2] # index 2 to extract the workgroup
-    AK.foreachindex(nut, min_elems=wk, block_size=wk) do i
-        Si = S[i] # 0.5*(gradUi + gradUi')
-        magS = sqrt(scalar(2.0)*Si⋅Si)
-        nut[i] = Δ[i]*magS # Δ is (Cs*Δ)^2
+    # Bind values, not fields, so the closure carries no mesh (xcal_foreach runs on any backend)
+    nutv, Δv, gradUv = field_values(nut), field_values(Δ), field_values(gradU.result)
+    xcal_foreach(nutv, config) do i
+        gradUi = gradUv[i]
+        Si = (gradUi + gradUi')/2
+        magS = sqrt(2*Si⋅Si)
+        nutv[i] = Δv[i]*magS # Δ is (Cs*Δ)^2
     end
 
     interpolate!(nutf, nut, config)
     correct_boundaries!(nutf, nut, boundaries.nut, time, config)
-    correct_eddy_viscosity!(nutf, boundaries.nut, model, config)
+    correct_eddy_viscosity!(nutf, boundaries.nut, model, config, les.wall_scratch)
 end
 
 # Specialise VTK writer
 function save_output(model::Physics{T,F,SO,M,Tu,E,D,BI}, outputWriter, iteration, time, config
     ) where {T,F,SO,M,Tu<:Smagorinsky,E,D,BI}
-    args = (
-        ("U", model.momentum.U), 
-        ("p", model.momentum.p),
-        ("nut", model.turbulence.nut)
-    )
-    write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
+    if F <: Incompressible
+        args = (
+            ("U", model.momentum.U), 
+            ("p", model.momentum.p),
+            ("nut", model.turbulence.nut)
+        )
+    elseif F <: SupersonicFlow
+        args = (
+            ("U", model.momentum.U), 
+            ("p", model.momentum.p),
+            ("nut", model.turbulence.nut),
+            ("T", model.energy.T),
+            ("rho", model.fluid.rho)
+        )
+    else
+        args = (
+            ("U", model.momentum.U), 
+            ("p", model.momentum.p),
+            ("nut", model.turbulence.nut),
+            ("he", model.energy.T),
+            ("rho", model.fluid.rho)
+        )
+
+    end
+write_results(iteration, time, model.domain, outputWriter, config.boundaries, args...)
 end

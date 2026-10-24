@@ -1,7 +1,7 @@
 export UNV2D_mesh
 
 """
-    UNV2D_mesh(meshFile; scale=1, integer_type=Int64, float_type=Float64)
+    UNV2D_mesh(meshFile; scale=1, integer_type=Int32, float_type=Float64)
 
 Read and convert 2D UNV mesh file into XCALibre.jl
 
@@ -13,15 +13,21 @@ Read and convert 2D UNV mesh file into XCALibre.jl
 
 - `scale` -- used to scale mesh file e.g. scale=0.001 will convert mesh from mm to metres defaults to 1 i.e. no scaling
 
-- `integer_type` - select interger type to use in the mesh (Int32 may be useful on GPU runs) 
+- `integer_type` - integer type of the mesh indices; `Int64` is needed only when a mesh has more than 2^31 faces, face-node entries or matrix entries, and reading such a mesh as `Int32` stops with an error saying so
 
 - `float_type` - select interger type to use in the mesh (Float32 may be useful on GPU runs) 
 
 """
-function UNV2D_mesh(meshFile; scale=1, integer_type=Int64, float_type=Float64)
+function UNV2D_mesh(meshFile; scale=1, integer_type=Int32, float_type=Float64)
+    return _with_index_capacity(() -> _UNV2D_mesh(meshFile, scale, integer_type, float_type), integer_type)
+end
+
+# Type-parameter barrier keeps the build type-stable for non-default integer/float types.
+function _UNV2D_mesh(meshFile, scale, ::Type{TI}, ::Type{TF}) where {TI<:Integer, TF<:AbstractFloat}
     stats = @timed begin
     println("Loading mesh...")
-    points, elements, boundaryElements = read_UNV2(meshFile, integer_type, float_type);
+    # geometry is always built in Float64; conversion to float_type happens after a cheap check
+    points, elements, boundaryElements = read_UNV2(meshFile, TI, Float64);
     println("File read successfully")
     if scale != one(typeof(scale))
         scalePoints!(points, scale)
@@ -33,9 +39,9 @@ function UNV2D_mesh(meshFile; scale=1, integer_type=Int64, float_type=Float64)
     connect!(cells, faces, nodes, boundaries, bfaces)
     mesh = Mesh2(cells, faces, boundaries, nodes)
     process_geometry!(mesh)
-    # mesh = Mesh.FullMesh(nodes, faces, cells, boundaries)
 
-    mesh = update_mesh_format(mesh, integer_type, float_type)
+    mesh = update_mesh_format(mesh, TI, Float64)
+    mesh = Mesh.convert_mesh_float(mesh, TF)
     end
     println("Done! Execution time: ", @sprintf "%.6f" stats.time)
     println("Mesh ready!")
@@ -94,15 +100,15 @@ end
 
 # GENERATION FUNCTIONS
 
-function generate_nodes(first_element, elements, points::Vector{Point{TF}}) where TF
-   nodes = Node{Int64, TF}[]
+function generate_nodes(first_element, elements::Vector{Element{TI}}, points::Vector{Point{TF}}) where {TI, TF}
+   nodes = Node{TI, TF}[]
    @inbounds for i ∈ 1:length(points)
        point = points[i].xyz
-       push!(nodes, Node(point))
+       push!(nodes, Node(point, TI[]))
    end
-   cellID = 0 # counter for cells
+   cellID = zero(TI) # counter for cells
    @inbounds for i ∈ first_element:length(elements) 
-           cellID += 1
+           cellID += one(TI)
            @inbounds for nodeID ∈ elements[i].vertices
                push!(nodes[nodeID].neighbourCells, cellID)
            end
@@ -133,24 +139,6 @@ function generate_faces(bfaces, first_element, elements::Vector{Element{TI}},
             end 
         end
     end
-
-    # # Start with boundary faces (stored in "elements")
-    # for i ∈ 1:bfaces # loop over elements stored before the first element
-    #     face = Face2D(TI,TF)
-    #     vertex1 = elements[i].vertices[1]
-    #     vertex2 = elements[i].vertices[2]
-    #     if vertex1 < vertex2
-    #         face = @set face.nodesID = SVector{2,TI}(vertex1, vertex2)
-    #         push!(faces, face)
-    #         continue
-    #     elseif vertex1 > vertex2 
-    #         face = @set face.nodesID = SVector{2,TI}(vertex2, vertex1)
-    #         push!(faces, face)
-    #         continue
-    #     else
-    #         throw("Boundary elements are inconsistent: possible mesh corruption")
-    #     end
-    # end
 
     # Now build faces for cell-elements (will generate some duplicate faces)
     @inbounds for i ∈ first_element:length(elements)
@@ -267,13 +255,6 @@ function boundary_connectivity!(
             id1 = faceNodesID[1]
             id2 = faceNodesID[2]
             facedef = SVector{2,TI}(id1,id2)
-            # id1 = nodesID[i]
-            # id2 = nodesID[i+1]
-            # if id1 < id2 
-            #     facedef = SVector{2,TI}(id1,id2)
-            # else
-            #     facedef = SVector{2,TI}(id2,id1)
-            # end
             @inbounds for fID ∈ 1:bfaces 
                 face = faces[fID]
                 if facedef == face.nodesID

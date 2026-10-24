@@ -1,6 +1,6 @@
 export AbstractOperator, AbstractSource, AbstractEquation   
 export Operator, Source, Src
-export Time, Laplacian, Divergence, Si
+export Time, Laplacian, Divergence, Si, time_operator
 export Model, ScalarEquation, VectorEquation, ModelEquation, ScalarModel, VectorModel
 export nzval_index
 export spindex, spindex_csc
@@ -15,20 +15,31 @@ abstract type AbstractEquation end
 
 # Base Operator
 
-struct Operator{F,P,S,T} <: AbstractOperator
+# `grad` holds the cell gradient of `phi` for schemes that reconstruct face values (`nothing` otherwise)
+struct Operator{F,P,S,T,G} <: AbstractOperator
     flux::F
     phi::P 
     sign::S
     type::T
+    grad::G
 end
 Adapt.@adapt_structure Operator
+Operator(flux, phi, sign, type) = Operator(flux, phi, sign, type, nothing)
 
 # operators
 
-struct Time{T} end
-function Adapt.adapt_structure(to, itp::Time{T}) where {T}
-    Time{T}()
+# `state` holds the old time levels of schemes that keep them (`nothing` otherwise)
+struct Time{T,S}
+    state::S
 end
+Time{T}() where T = Time{T,Nothing}(nothing)
+function Adapt.adapt_structure(to, itp::Time{T}) where {T}
+    state = adapt(to, itp.state)
+    Time{T,typeof(state)}(state)
+end
+
+# the Time operator of scheme T for field phi; schemes with old levels extend it
+time_operator(T, phi) = Time{T}()
 
 struct Laplacian{T} end
 function Adapt.adapt_structure(to, itp::Laplacian{T}) where {T}
@@ -48,11 +59,11 @@ end
 # constructors
 
 Time{T}(flux, phi) where T = Operator(
-    flux, phi, 1, Time{T}()
+    flux, phi, 1, time_operator(T, phi)
     )
 
 Time{T}(phi) where T = Operator(
-    ConstantScalar(one(_get_int(phi.mesh))), phi, 1, Time{T}()
+    ConstantScalar(one(_get_int(phi.mesh))), phi, 1, time_operator(T, phi)
     )
 
 Laplacian{T}(flux, phi) where T = Operator(
@@ -62,6 +73,9 @@ Laplacian{T}(flux, phi) where T = Operator(
 Divergence{T}(flux, phi) where T = Operator(
     flux, phi, 1, Divergence{T}()
     )
+
+# schemes without a face reconstruction ignore the gradient (see `LinearUpwind`)
+Divergence{T}(flux, phi, grad) where T = Divergence{T}(flux, phi)
 
 Si(flux, phi) = Operator(
     flux, phi, 1, Si()
@@ -103,16 +117,21 @@ end
 # _build_A(backend::CPU, i, j, v, n) = sparsecsr(i, j, v, n, n)
 # _build_opA(A::SparseMatricesCSR.SparseMatrixCSR) = LinearOperator(A)
 
-_build_A(backend::CPU, i, j, v, n) = SparseXCSR(sparsecsr(i, j, v, n, n))
+_build_A(backend::CPU, i, j, v, n) = begin
+    A = SparseXCSR(sparsecsr(i, j, v, n, n))
+    backend.static ? first_touch(A) : A
+end
 _build_opA(A::SparseXCSR) = A
 
 ## ORIGINAL STRUCTURE PARAMETERISED FOR GPU
-struct ScalarEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: AbstractEquation
+struct ScalarEquation{VTf<:AbstractVector, VTi<:AbstractVector, ASA<:AbstractSparseArray, OP} <: AbstractEquation
     A::ASA
     opA::OP
     b::VTf
     R::VTf
     Fx::VTf
+    diag_nz::VTi  # nzval index of A[i,i]
+    face_nz::VTi  # nzval index of A[owner, neighbour], indexed like mesh.cell_neighbours
 end
 Adapt.@adapt_structure ScalarEquation
 
@@ -139,30 +158,26 @@ ScalarEquation(phi::ScalarField, BCs) = begin
     mesh_temp = adapt(CPU(), mesh) # WARNING: Temp solution 
     i, j, v = sparse_matrix_connectivity(mesh_temp) # This needs to be a kernel
     i, j = extend_matrix(mesh, BCs, i, j)
-    # i = [i; periodicConnectivity.i]
-    # j = [j; periodicConnectivity.j]
+    _check_index_capacity(eltype(i), length(j) + 1, "the matrix entry count")
     v = zeros(Tf, length(j))
     backend = _get_backend(mesh)
     # A = _convert_array!(sparse(i, j, v), backend)
     A = _build_A(backend, i, j, v, nCells)
+    diag_nz, face_nz = nz_index_maps(mesh_temp, A, backend)
     ScalarEquation(
         A,
 
        _build_opA(A),
-        # KP.KrylovOperator(A), # small gain in performance
-        # A,
-
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend)
 
         KernelAbstractions.zeros(backend, Tf, nCells),
         KernelAbstractions.zeros(backend, Tf, nCells),
-        KernelAbstractions.zeros(backend, Tf, nCells)
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        diag_nz,
+        face_nz
         )
 end
 
-struct VectorEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: AbstractEquation
+struct VectorEquation{VTf<:AbstractVector, VTi<:AbstractVector, ASA<:AbstractSparseArray, OP} <: AbstractEquation
     A0::ASA
     A::ASA
     opA::OP
@@ -171,6 +186,8 @@ struct VectorEquation{VTf<:AbstractVector, ASA<:AbstractSparseArray, OP} <: Abst
     bz::VTf
     R::VTf
     Fx::VTf
+    diag_nz::VTi
+    face_nz::VTi
 end
 Adapt.@adapt_structure VectorEquation
 
@@ -181,36 +198,26 @@ VectorEquation(psi::VectorField, BCs) = begin
     mesh_temp = adapt(CPU(), mesh) # WARNING: Temp solution 
     i, j, v = sparse_matrix_connectivity(mesh_temp) # This needs to be a kernel
     i, j = extend_matrix(mesh, BCs, i, j)
-    # i = [i; periodicConnectivity.i]
-    # j = [j; periodicConnectivity.j]
+    _check_index_capacity(eltype(i), length(j) + 1, "the matrix entry count")
     v = zeros(Tf, length(j))
     backend = _get_backend(mesh)
-    # A = _convert_array!(sparse(i, j, v), backend) 
-    # A0 = _convert_array!(sparse(i, j, v), backend)
-    # A = _convert_array!(sparsecsr(i, j, v), backend) 
-    # A0 = _convert_array!(sparsecsr(i, j, v), backend)
 
     A = _build_A(backend, i, j, v, nCells)
     A0 = _build_A(backend, i, j, v, nCells)
+    diag_nz, face_nz = nz_index_maps(mesh_temp, A, backend)
     VectorEquation(
         A0,
         A,
 
         _build_opA(A),
-        # KP.KrylovOperator(A),
-        # A,
-
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend),
-        # _convert_array!(zeros(Tf, nCells), backend)
 
         KernelAbstractions.zeros(backend, Tf, nCells),
         KernelAbstractions.zeros(backend, Tf, nCells),
         KernelAbstractions.zeros(backend, Tf, nCells),
         KernelAbstractions.zeros(backend, Tf, nCells),
-        KernelAbstractions.zeros(backend, Tf, nCells)
+        KernelAbstractions.zeros(backend, Tf, nCells),
+        diag_nz,
+        face_nz
         )
 end
 
@@ -241,6 +248,25 @@ function sparse_matrix_connectivity(mesh::AbstractMesh)
     return i, j, v
 end
 
+
+# The CSR sparsity pattern is fixed for the life of an equation, so the nzval index of every
+# coefficient the assembly writes can be resolved once instead of searched for on every call.
+# Built on the host from a host mesh, then moved to the backend with the rest of the equation.
+function nz_index_maps(mesh, A, backend)
+    TI = _get_int(mesh)
+    rowptr = _rowptr(A) |> Array
+    colval = _colval(A) |> Array
+    (; cells, cell_neighbours) = mesh
+    diag_nz = KernelAbstractions.zeros(_active_backend(CPU()), TI, length(cells))
+    face_nz = KernelAbstractions.zeros(_active_backend(CPU()), TI, length(cell_neighbours))
+    for cID ∈ eachindex(cells)
+        diag_nz[cID] = spindex(rowptr, colval, cID, cID)
+        for fi ∈ cells[cID].faces_range
+            face_nz[fi] = spindex(rowptr, colval, cID, cell_neighbours[fi])
+        end
+    end
+    (adapt(backend, diag_nz), adapt(backend, face_nz))
+end
 
 # Sparse CSR format
 function spindex(rowptr::AbstractArray{T}, colval, i, j) where T

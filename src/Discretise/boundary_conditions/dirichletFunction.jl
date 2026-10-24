@@ -38,7 +38,7 @@ end
 
 @define_boundary DirichletFunction Laplacian{Linear} VectorField begin
     J = term.flux[fID]
-    (; area, delta, centre) = face 
+    area, delta, centre = faces.area[fID], faces.delta[fID], faces.centre[fID]
     flux = J*area/delta
     ap = term.sign*(-flux)
     # bc.value.update!(bc.value, centre, time, i)
@@ -49,34 +49,35 @@ end
 @define_boundary DirichletFunction Divergence{Linear} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    value = bc.value(faces.centre[fID], time, i)[component.value]
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{Upwind} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    value = bc.value(faces.centre[fID], time, i)[component.value]
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{LUST} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
+    value = bc.value(faces.centre[fID], time, i)[component.value]
     0.0, ap*value
 end
 
+# Bounded = upwind boundary with -Sp(div phi): subtract ap from the diagonal
 @define_boundary DirichletFunction Divergence{BoundedUpwind} VectorField begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)[component.value]
-    flux, ap*value
+    value = bc.value(faces.centre[fID], time, i)[component.value]
+    ap, ap*value
 end
 
 @define_boundary DirichletFunction Laplacian{Linear} begin
     J = term.flux[fID]
-    (; area, delta, centre) = face 
+    area, delta, centre = faces.area[fID], faces.delta[fID], faces.centre[fID]
     flux = J*area/delta
     ap = term.sign*(-flux)
     # bc.value.update!(bc.value, centre, time, i)
@@ -87,29 +88,30 @@ end
 @define_boundary DirichletFunction Divergence{Linear} begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)
+    value = bc.value(faces.centre[fID], time, i)
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{Upwind} begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)
+    value = bc.value(faces.centre[fID], time, i)
     0.0, ap*value
 end
 
 @define_boundary DirichletFunction Divergence{LUST} begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)
+    value = bc.value(faces.centre[fID], time, i)
     0.0, ap*value
 end
 
+# Bounded = upwind boundary with -Sp(div phi): subtract ap from the diagonal
 @define_boundary DirichletFunction Divergence{BoundedUpwind} begin
     flux = -term.flux[fID]
     ap = term.sign*(flux)
-    value = bc.value(face.centre, time, i)
-    flux, ap*value
+    value = bc.value(faces.centre[fID], time, i)
+    ap, ap*value
 end
 
 

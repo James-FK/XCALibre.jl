@@ -18,7 +18,7 @@ Adapt.@adapt_structure Dirichlet
 
 @define_boundary Dirichlet Laplacian{Linear} begin
     J = term.flux[fID]
-    (; area, delta) = face 
+    area, delta = faces.area[fID], faces.delta[fID]
     flux = J*area/delta
     ap = term.sign*(-flux)
     ap, ap*bc.value
@@ -42,15 +42,9 @@ end
     0.0, ap*bc.value
 end
 
-@define_boundary Dirichlet Divergence{BoundedUpwind} begin
-    flux = -term.flux[fID]
-    ap = term.sign*(flux)
-    flux, ap*bc.value
-end
-
 @define_boundary Dirichlet Laplacian{Linear} VectorField begin
     J = term.flux[fID]
-    (; area, delta) = face 
+    area, delta = faces.area[fID], faces.delta[fID]
     flux = J*area/delta
     ap = term.sign*(-flux)
     ap, ap*bc.value[component.value]
@@ -74,10 +68,15 @@ end
     0.0, ap*bc.value[component.value]
 end
 
+# Bounded = upwind boundary with -Sp(div phi): subtract ap from the diagonal
 @define_boundary Dirichlet Divergence{BoundedUpwind} VectorField begin
-    flux = -term.flux[fID]
-    ap = term.sign*(flux)
-    flux, ap*bc.value[component.value]
+    ap = term.sign*(term.flux[fID])
+    -ap, -ap*bc.value[component.value]
+end
+
+@define_boundary Dirichlet Divergence{BoundedUpwind} begin
+    ap = term.sign*(term.flux[fID])
+    -ap, -ap*bc.value
 end
 
 @define_boundary Dirichlet Si begin

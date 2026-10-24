@@ -1,16 +1,22 @@
 export SolverSetup, Runtime, Schemes
 export explicit_relaxation!, implicit_relaxation!, implicit_relaxation_diagdom!, setReference!
 export solve_system!
+export sync!
+export wrap_eqn
+export unwrap_eqn
+export is_distributed_mesh
+export is_report_rank
+export global_any, global_sum, global_min, n_owned_cells, global_cell_index
 export solve_equation!
-export residual!
-export AdaptiveTimeStepping
+export AdaptiveTimeStepping, LocalTimeStepping
 
 struct SolverSetup{
     F<:AbstractFloat,
     I<:Integer,
     S1<:AbstractLinearSolver,
     S2<:Union{Nothing, AbstractSmoother},
-    PT<:PreconditionerType
+    PT<:PreconditionerType,
+    PR<:AbstractSolvePrecision
     }
     solver::S1
     smoother::S2
@@ -21,6 +27,7 @@ struct SolverSetup{
     itmax::I
     atol::F
     rtol::F
+    precision::PR
 end
 
 """
@@ -39,7 +46,8 @@ end
             limit=nothing,
             itmax::Integer=1000, 
             atol=(eps(_get_float(region)))^0.9,
-            rtol=_get_float(region)(1e-1)
+            rtol=_get_float(region)(1e-1),
+            precision=FullPrecision()
 
         ) where {S,PT<:PreconditionerType} = begin
 
@@ -52,14 +60,15 @@ This function is used to provide solver settings that will be used internally in
 
 - `solver`: solver object from Krylov.jl and it could be one of `Bicgstab()`, `Cg()`, `Gmres()` which are re-exported in XCALibre.jl
 - `preconditioner`: instance of preconditioner to be used e.g. Jacobi()
-- `convergence` sets the stopping criteria of this field
+- `convergence`: residual target for this field that stops the outer (e.g. SIMPLE) iteration; it does not control the linear solver, which stops on `atol`, `rtol` and `itmax`.
 - `relax`: specifies the relaxation factor to be used e.g. set to 1 for no relaxation
 - `smoother`: specifies smoothing method to be applied before discretisation. `JacobiSmoother`: is currently the only choice (defaults to `nothing`)
 - `limit`: used in some solvers to bound the solution within these limits e.g. (min, max). It defaults to `nothing`
-- `itmax`: maximum number of iterations in a single solver pass (defaults to 1000) 
-- `atol`: absolute tolerance for the solver (default to eps(FloatType)^0.9)
-- `rtol`: set relative tolerance for the solver (defaults to 1e-1)
+- `itmax`: maximum number of iterations in a single solver pass (defaults to 1000, or 200 for `AMG`). Also applies to PETSc solves.
+- `atol`: absolute tolerance for the solver (default to eps(FloatType)^0.9). Also applies to PETSc solves.
+- `rtol`: set relative tolerance for the solver (defaults to 1e-1). Also applies to PETSc solves.
 - `float_type`: specifies the floating point type to be used by the solver. It is also used to estimate the absolute tolerance for the solver (defaults to `Float64`)
+- `precision`: precision of the linear solve, `FullPrecision()` (default), [`MixedF32`](@ref)`()` or [`MixedF16`](@ref)`()`.
 """
 SolverSetup(;
         float_type=Float64,
@@ -69,21 +78,50 @@ SolverSetup(;
         convergence, 
         relax, 
         limit=nothing,
-        itmax::I=1000, 
+        itmax::I=(solver isa AMG ? 200 : 1000),
         atol=(eps(float_type))^0.9,
-        rtol=1e-1 |> float_type
-        ) where{S1,S2,PT,I} = 
-        SolverSetup{float_type,I,S1,S2,PT}(
+        rtol=1e-1 |> float_type,
+        precision::PR=FullPrecision()
+        ) where{S1,S2,PT,I,PR} = begin
+        _check_precision(precision, solver, preconditioner)
+        SolverSetup{float_type,I,S1,S2,PT,PR}(
             solver, smoother,preconditioner, 
             float_type(convergence), 
             float_type(relax), 
             limit,
             itmax, 
             float_type(atol),
-            float_type(rtol))
+            float_type(rtol),
+            precision)
+    end
+
+_check_precision(::FullPrecision, solver, preconditioner) = nothing
+_check_precision(::AbstractMixedPrecision, solver, preconditioner) =
+    solver isa Union{Cg,Cgs,Bicgstab,Gmres} ||
+        throw(ArgumentError("mixed precision supports Cg, Cgs, Bicgstab and Gmres only"))
+
+# equation workspace honouring the setup's precision
+_workspace(setup::SolverSetup, eqn, dir...) = _workspace(setup.precision, setup, eqn, _b(eqn, dir...))
+_workspace(::FullPrecision, setup, eqn, b) = _workspace(setup.solver, b, _index_type(_A(eqn)))
+# serial meshes only: distributed mixed-precision solves go through PETSc and its preconditioners
+function _workspace(precision::AbstractMixedPrecision, setup, eqn, b)
+    precision isa MixedF16 && !(setup.preconditioner isa Jacobi) && throw(ArgumentError(
+        "MixedF16 supports the Jacobi preconditioner only; use MixedF32 for $(nameof(typeof(setup.preconditioner)))"))
+    MixedWorkspace(precision, setup.solver, setup.preconditioner, _A(eqn), b)
+end
+
+# the preconditioner of a SolverSetup: built on the equation's matrix in full precision, inert
+# under mixed precision, whose workspace builds its own
+set_preconditioner(setup::SolverSetup, eqn, args...) = _set_preconditioner(setup.precision, setup, eqn, args...)
+_set_preconditioner(::FullPrecision, setup, eqn, args...) = set_preconditioner(setup.preconditioner, eqn, args...)
+_set_preconditioner(::AbstractMixedPrecision, setup, eqn) =
+    Preconditioner{MixedPrecisionSolve,Nothing,Nothing,Nothing}(nothing, nothing, nothing)
+_set_preconditioner(::AbstractMixedPrecision, setup, eqn, BCs, config) =
+    set_preconditioner(setup.preconditioner, eqn, BCs, config)
 
 struct AdaptiveTimeStepping{F<:AbstractFloat}
     maxCo::F
+    maxAlphaCo::F
     minShrink::F
     maxGrow::F
 end
@@ -94,6 +132,7 @@ Adapt.@adapt_structure AdaptiveTimeStepping
         # keyword arguments
 
         maxCo=0.75,
+        maxAlphaCo=0.5,
         minShrink=0.1,
         maxGrow=1.2
     )
@@ -108,6 +147,8 @@ simulations. If not provided, a fixed time step is used.
 
 - `maxCo::AbstractFloat`: target maximum Courant number. The time step will be adjusted
   such that the computed Courant number approaches this value.
+- `maxAlphaCo::AbstractFloat`: target maximum Alpha Courant number. The time step will be adjusted
+  such that the computed Courant number approaches this value.
 - `minShrink::AbstractFloat`: lower bound on the multiplicative factor applied to the
   current time step. Prevents excessively large reductions in a single update.
 - `maxGrow::AbstractFloat`: upper bound on the multiplicative factor applied to the
@@ -115,11 +156,52 @@ simulations. If not provided, a fixed time step is used.
 """
 AdaptiveTimeStepping(;
     maxCo=0.75,
+    maxAlphaCo=0.5,
     minShrink=0.1,
     maxGrow=1.2
-) = AdaptiveTimeStepping(float(maxCo), float(minShrink), float(maxGrow))
+) = AdaptiveTimeStepping(float(maxCo), float(maxAlphaCo), float(minShrink), float(maxGrow))
 
-struct Runtime{I<:Integer,F<:AbstractFloat, V<:AbstractVector{F}, A<:Union{Nothing, AdaptiveTimeStepping}}
+# The reduction rule is a singleton type, not a `Symbol`, so that `LocalTimeStepping` is `isbits`
+# and can be passed to GPU kernels.
+struct MinDt end
+struct MeanDt end
+struct MaxDt end
+
+"""
+    LocalTimeStepping(; maxCo=1.0, startCo=maxCo, ramp=0, turbulence_dt=:min)
+
+Local (per-cell) pseudo-time stepping for the explicit density-based solver
+(`Fluid{SupersonicFlow}`, `godunov!`). Pass it as `adaptive` to `Runtime` to converge
+steady problems faster: every cell advances with its own time step
+`dt_i = CFL / (0.5 Σ_f (|U_i·n_f| + a_i) A_f / V_i + ν_eff Σ_f A_f² / V_i²)`, so the result of a
+converged run does not depend on `dt` and the iterations are not a time history. It combines with
+`FEuler()`, `RK2()` and the multistage schemes `RK3()`, `RK4()`, `RK5()`.
+
+# Input arguments
+
+- `maxCo::AbstractFloat`: Courant number of the cells (final value of the ramp).
+- `startCo::AbstractFloat`: Courant number of the first iteration.
+- `ramp::Integer`: number of iterations over which the Courant number grows linearly from
+  `startCo` to `maxCo` (`0` = no ramp). Useful to start from a uniform field.
+- `turbulence_dt::Symbol`: the implicit turbulence equations take one time step, the `:min` (default), `:mean` or `:max` of the cell time steps of the iteration.
+"""
+struct LocalTimeStepping{F<:AbstractFloat,I<:Integer,R<:Union{MinDt,MeanDt,MaxDt}}
+    maxCo::F
+    startCo::F
+    ramp::I
+    turbulence_dt::R
+end
+Adapt.@adapt_structure LocalTimeStepping
+
+_turbulence_dt_rule(s::Symbol) = s === :min ? MinDt() : s === :mean ? MeanDt() : s === :max ? MaxDt() :
+    throw(ArgumentError("`turbulence_dt` must be :min, :mean or :max, got :$s"))
+_turbulence_dt_rule(r::Union{MinDt,MeanDt,MaxDt}) = r
+
+function LocalTimeStepping(; maxCo=1.0, startCo=maxCo, ramp=0, turbulence_dt=:min)
+    LocalTimeStepping(float(maxCo), float(startCo), Int(ramp), _turbulence_dt_rule(turbulence_dt))
+end
+
+struct Runtime{I<:Integer,F<:AbstractFloat, V<:AbstractVector{F}, A<:Union{Nothing, AdaptiveTimeStepping, LocalTimeStepping}}
     iterations::I
     dt::V
     write_interval::I
@@ -200,7 +282,7 @@ The `Schemes` struct is used at the top-level API to help users define discretis
 - `divergence`: is used to set the divergence scheme (default is `Linear`) 
 - `laplacian`: is used to set the laplacian scheme (default is `Linear`)
 - `gradient`:  is used to set the gradient scheme (default is `Gauss`)
-- `limiter`: is used to specify if gradient limiters should be used, currently supported limiters include `FaceBased` and `MFaceBased` (default is `nothing`)
+- `limiter`: is used to specify if gradient limiters should be used, currently supported limiters include `CellBased`, `Venkatakrishnan`, `FaceBased` and `MFaceBased` (default is `nothing`)
 """
 @kwdef struct Schemes
     time=SteadyState
@@ -211,11 +293,12 @@ The `Schemes` struct is used at the top-level API to help users define discretis
 end
 
 
+# eqn.model.terms[1].flux implies that the time term must always be defined first when constructing an equation.
 function solve_equation!(
-    eqn::ModelEquation{T,M,E,S,P}, phi, phiBCs, solversetup, config; time=nothing, ref=nothing, irelax=nothing
+    eqn::ModelEquation{T,M,E,S,P}, phi, phiBCs, solversetup, config; rho_prev=eqn.model.terms[1].flux, time=nothing, ref=nothing, irelax=nothing
     ) where {T<:ScalarModel,M,E,S,P}
 
-    discretise!(eqn, phi, config)       
+    discretise!(eqn, phi, config, rho_prev=rho_prev, time=time)
     apply_boundary_conditions!(eqn, phiBCs, nothing, time, config)
     if length(eqn.model.terms) == 1 && typeof(eqn.model.terms[1]) <: Laplacian
         make_symmetric!(eqn, config) # added this to test stability of periodic boundaries
@@ -230,13 +313,14 @@ function solve_equation!(
     return res
 end
 
+# psiEqn.model.terms[1].flux implies that the time term must always be defined first when constructing an equation.
 function solve_equation!(
-    psiEqn::ModelEquation{T,M,E,S,P}, psi, psiBCs, solversetup, xdir, ydir, zdir, config; time=nothing
+    psiEqn::ModelEquation{T,M,E,S,P}, psi, psiBCs, solversetup, xdir, ydir, zdir, config; rho_prev=psiEqn.model.terms[1].flux, time=nothing
     ) where {T<:VectorModel,M,E,S,P}
 
     mesh = psi.mesh
 
-    discretise!(psiEqn, psi, config)
+    discretise!(psiEqn, psi, config, rho_prev=rho_prev, time=time)
     update_equation!(psiEqn, config)
     
     apply_boundary_conditions!(psiEqn, psiBCs, xdir, time, config)
@@ -265,7 +349,10 @@ function solve_equation!(
     return resx, resy, resz
 end
 
-function solve_system!(phiEqn::ModelEquation, setup, result, component, config)
+solve_system!(phiEqn::ModelEquation, setup, result, component, config) =
+    _solve_system!(setup.precision, phiEqn, setup, result, component, config)
+
+function _solve_system!(::FullPrecision, phiEqn, setup, result, component, config)
 
     (; itmax, atol, rtol) = setup
     precon = phiEqn.preconditioner
@@ -283,27 +370,94 @@ function solve_system!(phiEqn::ModelEquation, setup, result, component, config)
 
     apply_smoother!(setup.smoother, values, A, b, hardware)
 
+    ldiv = is_ldiv(precon)
+    bw, x0 = _like_workspace(x, b), _like_workspace(x, values)
     krylov_solve!(
-        solver, opA, b, values; 
-        M=P, itmax=itmax, atol=atol, rtol=rtol, ldiv=is_ldiv(precon)
+        solver, opA, bw, x0;
+        _shadow(solver, P, ldiv, phiEqn, values, b, config)...,
+        M=P, itmax=itmax, atol=atol, rtol=rtol, ldiv=ldiv, history=false
         )
-
-    # Perform explicit step for Crank-Nicholson. Otherwise simply update field with solution
-    if typeof(phiEqn.model.terms[1].type) <: Time{CrankNicolson}
-        xcal_foreach(x, config) do i 
-            x[i] = 2*x[i] - values[i]
-        end
+    # values still hold x₀: re-solve from there with a dense shadow (Fx is scratch until `residual`)
+    if _broke_down(solver, itmax)
+        krylov_solve!(
+            solver, opA, bw, x0; c=_fallback_shadow!(_like_workspace(x, phiEqn.equation.Fx)),
+            M=P, itmax=itmax, atol=atol, rtol=rtol, ldiv=ldiv, history=false
+            )
     end
 
-    ndrange = length(values)
-    kernel! = _copy!(_setup(backend, workgroup, ndrange)...)
-    kernel!(values, x)
+    if _broke_down(solver, itmax)
+        @warn "$(nameof(typeof(solver))) broke down twice; the field keeps its previous values" maxlog=10
+    else
+        ndrange = length(values)
+        kernel! = _sized(_copy!, backend, workgroup, ndrange)
+        kernel!(values, x)
+    end
 
-    Krylov.iteration_count(solver) == itmax && @warn "Maximum number of iterations reached!"
-
-    # println(statistics(solver).niter)
     res = residual(phiEqn, component, config)
+    Krylov.issolved(solver) || _warn_unconverged(phiEqn, setup, component,
+        solver.stats.status, Krylov.iteration_count(solver))
     return res
+end
+
+function _solve_system!(::AbstractMixedPrecision, phiEqn, setup, result, component, config)
+    (; values) = result
+    A = _A(phiEqn)
+    b = _b(phiEqn, component)
+    apply_smoother!(setup.smoother, values, A, b, config.hardware)
+    iterations, converged, reason = mixed_solve!(phiEqn.solver, A, b, values, setup, config, result.mesh)
+    res = residual(phiEqn, component, config)
+    converged || _warn_unconverged(phiEqn, setup, component, reason, iterations)
+    return res
+end
+
+# NEW SECTION: reporting linear solves that stop without meeting atol/rtol
+
+# one message on every solve path (serial, mixed precision, AMG, PETSc), at most `maxlog` per equation
+const UNCONVERGED_MAXLOG = 10
+
+_solve_name(setup, tag) = string(nameof(typeof(setup.solver)),
+    setup.precision isa FullPrecision ? "" : " ($(nameof(typeof(setup.precision))))",
+    " solve", isempty(tag) ? "" : " [$tag]")
+
+function _warn_unconverged(name, reason, iterations, rnorm, norm_name, setup, id)
+    @warn "$name did not converge in $iterations iterations ($reason): $norm_name = " *
+        "$(Float64(rnorm)), atol = $(setup.atol), rtol = $(setup.rtol) (shown at most " *
+        "$UNCONVERGED_MAXLOG times per equation)" maxlog=UNCONVERGED_MAXLOG _id=id
+end
+
+# serial solves report ‖b - Ax‖₂ of the returned iterate, read from `residual`'s |b - Ax| in R
+function _warn_unconverged(eqn::ModelEquation, setup, component, reason, iterations)
+    tag = _component_tag(component)
+    _warn_unconverged(_solve_name(setup, tag), reason, iterations, norm(eqn.equation.R),
+        "‖b - Ax‖₂", setup, (:unconverged_solve, objectid(eqn.solver), tag))
+end
+
+_component_tag(::Nothing) = ""
+_component_tag(::XDir) = "x component"
+_component_tag(::YDir) = "y component"
+_component_tag(::ZDir) = "z component"
+
+# BiCGStab shadow vector M⁻¹(b - Ax0), as PETSc bcgs: Krylov.jl's default c = b suits only a zero
+# initial guess, and warm-started iterates degraded as steady runs converged (10M motorBike diverged).
+# Built in the scratch arrays R and Fx, which nothing touches until `residual`.
+_shadow(solver, P, ldiv, eqn, x0, b, config) = (;)
+function _shadow(solver::BicgstabWorkspace, P, ldiv, eqn, x0, b, config)
+    (; A, R, Fx) = eqn.equation
+    (; backend, workgroup) = config.hardware
+    kernel! = _sized(_initial_residual!, backend, workgroup, length(R))
+    kernel!(R, _rowptr(A), _colval(A), _nzval(A), x0, b)
+    r0, c = _like_workspace(solver.x, R), _like_workspace(solver.x, Fx)
+    ldiv ? ldiv!(c, P, r0) : mul!(c, P, r0)
+    return (; c)
+end
+
+@kernel function _initial_residual!(R, @Const(rowptr), @Const(colval), @Const(nzval), @Const(x), @Const(b))
+    i = @index(Global)
+    Ax = zero(eltype(R))
+    @inbounds for nzi ∈ rowptr[i]:(rowptr[i + 1] - 1)
+        Ax += nzval[nzi]*x[colval[nzi]]
+    end
+    @inbounds R[i] = b[i] - Ax
 end
 
 @kernel function _copy!(a, b)
@@ -319,9 +473,10 @@ function explicit_relaxation!(phi, phi0, alpha, config)
     (; backend, workgroup) = hardware
 
     ndrange = length(phi)
-    kernel! = explicit_relaxation_kernel!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(explicit_relaxation_kernel!, backend, workgroup, ndrange)
     kernel!(phi, phi0, alpha)
     # KernelAbstractions.synchronize(backend)
+    sync!(phi, phi.mesh, config) # self-syncing seam (no-op serial)
 end
 
 @kernel function explicit_relaxation_kernel!(phi, phi0, alpha)
@@ -346,20 +501,21 @@ function implicit_relaxation!(
     colval = _colval(A)
     rowptr = _rowptr(A)
     nzval = _nzval(A)
+    diag_nz = phiEqn.equation.diag_nz
 
     ndrange = length(b)
-    kernel! = implicit_relaxation_kernel!(_setup(backend, workgroup, ndrange)...)
-    kernel!(colval, rowptr, nzval, b, field, alpha)
+    kernel! = _sized(implicit_relaxation_kernel!, backend, workgroup, ndrange)
+    kernel!(colval, rowptr, nzval, diag_nz, b, field, alpha)
     # KernelAbstractions.synchronize(backend)
 end
 
-@kernel function implicit_relaxation_kernel!(colval, rowptr, nzval, b, field, alpha)
+@kernel function implicit_relaxation_kernel!(colval, rowptr, nzval, diag_nz, b, field, alpha)
     i = @index(Global)
     
     @inbounds begin
-        nIndex = spindex(rowptr, colval, i, i)
+        nIndex = diag_nz[i]
         nzval[nIndex] /= alpha
-        b[i] += (1.0 - alpha)*nzval[nIndex]*field[i]
+        b[i] += (one(alpha) - alpha)*nzval[nIndex]*field[i]
     end
 end
 
@@ -378,22 +534,22 @@ function implicit_relaxation_diagdom!(
     colval = _colval(A)
     rowptr = _rowptr(A)
     nzval = _nzval(A)
+    diag_nz = phiEqn.equation.diag_nz
 
     ndrange = length(b)
-    kernel! = _implicit_relaxation_diagdom!(_setup(backend, workgroup, ndrange)...)
-    kernel!(colval, rowptr, nzval, b, field, alpha)
+    kernel! = _sized(_implicit_relaxation_diagdom!, backend, workgroup, ndrange)
+    kernel!(colval, rowptr, nzval, diag_nz, b, field, alpha)
     # KernelAbstractions.synchronize(backend)
 end
 
-@kernel function _implicit_relaxation_diagdom!(colval, rowptr, nzval, b, field, alpha)
+@kernel function _implicit_relaxation_diagdom!(colval, rowptr, nzval, diag_nz, b, field, alpha)
     i = @index(Global)
     
     sumv = zero(eltype(b))
 
     @inbounds begin
 
-        # Find nzval index relating to A[i,i]
-        cIndex = spindex(rowptr, colval, i, i)
+        cIndex = diag_nz[i]
 
         start_index = rowptr[i]
         end_index = rowptr[i+1] -1
@@ -423,7 +579,7 @@ function setReference!(pEqn::E, pRef, cellID, config) where E<:ModelEquation
         rowptr = _rowptr(A)
 
         ndrange = 1
-        kernel! = _setReference!(_setup(backend, workgroup, ndrange)...)
+        kernel! = _sized(_setReference!, backend, workgroup, ndrange)
         kernel!(nzval, colval, rowptr, b, pRef, cellID)
     end
 end
@@ -442,26 +598,78 @@ function residual(eqn, component, config)
     (; A, R, Fx) = eqn.equation
     b = _b(eqn, component)
     values = get_values(get_phi(eqn), component)
+    (; backend, workgroup) = config.hardware
 
-    # # Openfoam's residual definition (not optimised)
-    # Fx .= A*values
-    # R .= mean(values)
-    # Fx_mean = A*R 
-    # T1 = mean(norm.(b .- Fx))
-    # T2 = mean(norm.(Fx .- Fx_mean))
-    # T3 = mean(norm.(b .- Fx_mean))
-    # Residual = T1/(T2 + T3)
+    rowptr = _rowptr(A)
+    colval = _colval(A)
+    nzval = _nzval(A)
+    ndrange = length(values)
+    kernel! = _sized(_scaled_residual!, backend, workgroup, ndrange)
+    kernel!(R, Fx, rowptr, colval, nzval, values, b)
 
-    # Previous definition
-    Fx .= A * values
-    xcal_foreach(R, config) do i 
-            @inbounds R[i] = (b[i] - Fx[i])^2
-    end
-    normb = norm(b)
-    denominator = ifelse(normb > eps(normb), normb, one(normb))
-    Residual = sqrt(sum(R)) / denominator
+    denominator = sum(Fx)
+    denominator = ifelse(denominator > eps(denominator), denominator, one(denominator))
+    Residual = sum(R) / denominator
+
+    # Alternative: OpenFOAM normalised residual T1/(T2 + T3) (not optimised)
     return Residual
 end
+
+@kernel function _scaled_residual!(R, Fx, @Const(rowptr), @Const(colval), @Const(nzval), @Const(values), @Const(b))
+    i = @index(Global)
+    Ax = zero(eltype(R))
+    Dx = zero(eltype(R))
+    xi = values[i]
+
+    @inbounds for nzi ∈ rowptr[i]:(rowptr[i + 1] - 1)
+        Aij = nzval[nzi]
+        j = colval[nzi]
+        Ax += Aij * values[j]
+        if j == i
+            Dx = Aij * xi
+        end
+    end
+
+    @inbounds begin
+        R[i] = abs(b[i] - Ax)
+        Fx[i] = abs(Dx)
+    end
+end
+
+# halo-exchange seam: DistributedMesh method lives in Distribute; serial is a free no-op
+@inline sync!(x, mesh::Union{Mesh2,Mesh3}, config) = nothing
+
+# linear-solve seam: setup wraps each eqn so the body calls generic solve_equation!/
+# solve_system!. Serial = identity; Distribute overrides for DistributedMesh (DistributedEqn +
+# PETScSolver). Extra kwargs (petsc_options) are ignored serially.
+wrap_eqn(eqn, mesh, setup, config; kwargs...) = eqn
+
+# raw ModelEquation behind a (possibly wrapped) eqn: solver bodies assemble/discretise on the
+# raw eqn but solve through the wrapper. Serial identity; Distribute unwraps DistributedEqn.
+@inline unwrap_eqn(eqn) = eqn
+
+
+# mesh-kind predicate: Distribute overrides for DistributedMesh. mesh is concrete in bodies so
+# calls constant-fold — used to skip Krylov precond/workspace setup and rank-0-only reporting.
+@inline is_distributed_mesh(mesh) = false
+
+# true where solver progress/@info should print: always serial, only rank 0 when distributed
+@inline is_report_rank(mesh) = true
+
+# true on every rank if flag is true on any rank: serial identity, Distribute reduces over ranks
+global_any(flag::Bool, mesh) = flag
+
+# sum over ranks of a number or array (e.g. a patch integral): serial identity, Distribute reduces
+global_sum(v, mesh) = v
+
+# minimum over ranks (e.g. a global time step): serial identity, Distribute reduces
+global_min(v, mesh) = v
+
+# cells this rank updates and reduces over (owned cells first, then ghosts on a distributed mesh)
+n_owned_cells(mesh) = length(mesh.cells)
+
+# mesh-wide id of local cell i (its index in the undecomposed mesh): serial identity
+global_cell_index(mesh, i) = i
 
 function make_symmetric!(eqn, config)
     (; hardware) = config
@@ -475,7 +683,7 @@ function make_symmetric!(eqn, config)
 
     nbfaces = mesh.boundary_cellsID |> length
     ndrange = length(faces) - nbfaces
-    kernel! = _make_symmetric!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(_make_symmetric!, backend, workgroup, ndrange)
     kernel!(colval, rowptr, nzval, faces, nbfaces)
 end
 
@@ -484,9 +692,11 @@ end
     fID = i + nbfaces
 
     face = faces[fID]
-    (; ownerCells) = face 
-    cID1 = ownerCells[1]
-    cID2 = ownerCells[2]
+    (; ownerCells) = face
+    # canonical row = min owner: on partitioned meshes owner1 may be a ghost whose CSR
+    # row is garbage; coeff is symmetric so serial value is unchanged
+    cID1 = min(ownerCells[1], ownerCells[2])
+    cID2 = max(ownerCells[1], ownerCells[2])
 
     cIndex1 = spindex(rowptr, colval, cID1, cID2)
     cIndex2 = spindex(rowptr, colval, cID2, cID1)

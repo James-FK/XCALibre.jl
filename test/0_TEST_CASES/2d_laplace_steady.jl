@@ -46,20 +46,16 @@ BCs = assign(
 
 
 
-solvers = (
-    T = SolverSetup(
-        solver      = Cg(), # Bicgstab(), Gmres()
-        preconditioner = Jacobi(), # Jacobi(), #NormDiagonal(), # DILU()
-        convergence = 1e-8,
-        relax       = 0.8,
-        rtol = 1e-4,
-        atol = 1e-5
-    )
+solvers = SolverSetup(
+    solver      = Cg(), # Bicgstab(), Gmres()
+    preconditioner = Jacobi(), # Jacobi(), #NormDiagonal(), # DILU()
+    convergence = 1e-8,
+    relax       = 0.8,
+    rtol = 1e-4,
+    atol = 1e-5
 )
 
-schemes = (
-    T = Schemes(laplacian = Linear)
-)
+schemes = Schemes(laplacian = Linear)
 
 
 runtime = Runtime(
@@ -72,7 +68,7 @@ GC.gc(true)
 
 @test initialise!(model.energy.T, 100.0) === nothing
 
-residuals = run!(model, config)
+residuals = run!(model, config) # keeps the default progress bar for the on/off comparison below
 
 wall_L = boundary_average(:left_wall, model.energy.T, BCs.T, config)
 wall_R = boundary_average(:right_wall, model.energy.T, BCs.T, config)
@@ -88,3 +84,6 @@ tolerance = diagonal_temp / 10.0
 
 @test wall_R ≈ warm_average atol=tolerance
 @test wall_U ≈ cold_average atol=tolerance
+# progress output changes nothing but the display
+initialise!(model.energy.T, 100.0)
+@test run!(model, config; progress=false) == residuals

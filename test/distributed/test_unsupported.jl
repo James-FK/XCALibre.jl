@@ -1,0 +1,77 @@
+# A solver or model with no distributed linear-solve seam must error rather than let each rank
+# solve its own block. The supported set is declared by `distributed_ready` methods.
+using XCALibre, PETSc, MPI, Test
+
+MPI.Init()
+comm = MPI.COMM_WORLD
+rank = MPI.Comm_rank(comm)
+
+include(joinpath(@__DIR__, "psimple_case.jl"))
+
+check = XCALibre.Solvers.check_distributed_support
+
+gmesh = rank == 0 ? bfs_mesh() : nothing
+dm = distribute(gmesh; comm=comm)
+model, config = incompressible_case(dm, bfs_bcs; iterations=1)
+
+les_model = Physics(
+    time = Steady(),
+    fluid = Fluid{Incompressible}(nu=1e-3),
+    turbulence = LES{Smagorinsky}(),
+    energy = Energy{Isothermal}(),
+    domain = dm)
+
+# density-based solver: supported with the RANS models, refused with the LES models it has
+# no distributed path for
+godunov_model(turbulence) = Physics(
+    time = Transient(),
+    fluid = Fluid{SupersonicFlow}(nu=1e-5, cp=1005.0, gamma=1.4, Pr=0.7),
+    turbulence = turbulence,
+    energy = Energy{SensibleEnthalpy}(Tref=0.0),
+    domain = dm)
+
+compressible_model = Physics(
+    time = Steady(),
+    fluid = Fluid{WeaklyCompressible}(nu=1e-3, cp=1005.0, gamma=1.4, Pr=0.7),
+    turbulence = RANS{Laminar}(),
+    energy = Energy{SensibleEnthalpy}(Tref=288.15),
+    domain = dm)
+
+@testset "unsupported distributed combinations error (rank $rank)" begin
+    # supported: the set this branch wired and tested
+    @test check(:SIMPLE, model) === nothing
+    @test check(:PISO, model) === nothing
+    @test check(:potential_flow, model) === nothing
+    @test check(:Godunov, godunov_model(RANS{Laminar}())) === nothing
+    @test check(:Godunov, godunov_model(RANS{KOmegaSST}(walls=(:wall,)))) === nothing
+
+    # unsupported solver, supported models
+    @test_throws ErrorException check(:CSIMPLE, model)
+    @test_throws ErrorException check(:CPISO, model)
+    @test_throws ErrorException check(:SIMPLE_MRF, model)
+    @test_throws ErrorException check(:multiphase, model)
+    @test_throws ErrorException check(:FilmModel, model)
+
+    # supported solver, unsupported model
+    @test_throws ErrorException check(:SIMPLE, les_model)
+    @test_throws ErrorException check(:SIMPLE, compressible_model)
+    @test_throws ErrorException check(:Godunov, godunov_model(LES{Smagorinsky}()))
+    @test_throws ErrorException check(:Godunov, godunov_model(LES{WALE}()))
+    # SensibleEnthalpy holds only T for the density-based solver; the pressure-based ones solve it
+    @test_throws ErrorException check(:CSIMPLE, godunov_model(RANS{Laminar}()))
+
+    # the message names what is missing, so it doubles as the implementation list
+    msg = try; check(:CSIMPLE, les_model); ""; catch e; sprint(showerror, e); end
+    @test occursin("CSIMPLE", msg) && occursin("Smagorinsky", msg)
+    cmsg = try; check(:CSIMPLE, compressible_model); ""; catch e; sprint(showerror, e); end
+    @test occursin("WeaklyCompressible", cmsg) && occursin("SensibleEnthalpy", cmsg)
+end
+
+# a serial mesh is never refused
+if rank == 0
+    smodel, _ = incompressible_case(gmesh, bfs_bcs; iterations=1)
+    @testset "serial meshes are not refused" begin
+        @test check(:CSIMPLE, smodel) === nothing
+        @test check(:Godunov, smodel) === nothing
+    end
+end

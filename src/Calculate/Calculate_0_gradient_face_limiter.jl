@@ -1,3 +1,7 @@
+# Face-based gradient limiter (cf. OpenFOAM faceLimitedGrad): per internal face, owner/neighbour bounds are relaxed by ±(max-min)
+# (OpenFOAM k=0.5); each cell keeps the minimum limiter ratio over its faces, then a second kernel scales the gradient.
+# Unlike CellBased (strict full-neighbourhood bounds), limiter contributions accumulate from both sides of each face.
+
 export limit_gradient!
 export FaceBased
 
@@ -21,7 +25,6 @@ function limit_gradient!(method::FaceBased, ∇F, F::AbstractField, config)
 
     (; cells, faces, boundary_cellsID,) = F.mesh
 
-    # limiter = fill!(allocate(backend, eltype(F), length(cells)), one(eltype(F)))
     limiter = method.limiter
     limiter .= one(eltype(limiter))
 
@@ -29,15 +32,14 @@ function limit_gradient!(method::FaceBased, ∇F, F::AbstractField, config)
     internal_faces = length(faces) - nbfaces
 
     ndrange = internal_faces
-    kernel! = _limit_gradient!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(_limit_gradient!, backend, workgroup, ndrange)
     kernel!(method, limiter, ∇F, F, cells, faces, nbfaces)
-    # KernelAbstractions.synchronize(backend)
 
     ndrange = length(F)
-    kernel! = _update_gradient!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(_update_gradient!, backend, workgroup, ndrange)
     kernel!(∇F, limiter)
 
-    # KernelAbstractions.synchronize(backend)
+    sync!(∇F.result, F.mesh, config) # ghost limiter values are wrong (partial face lists)
     nothing
 end
 
@@ -54,93 +56,101 @@ end
     i = @index(Global)
     fID = i + nbfaces
 
-    face = faces[fID]
-    ownerCells = face.ownerCells
-    owner1 = ownerCells[1]
-    owner2 = ownerCells[2]
-    cell1 = cells[owner1]
-    cell2 = cells[owner2]
+    @inbounds begin
+        ownerCells = faces.ownerCells[fID]
+        owner1 = ownerCells[1]
+        owner2 = ownerCells[2]
 
-    n = face.normal
-    cf = face.centre 
-    c1 = cell1.centre
-    c2 = cell2.centre
-    d1 = (cf - c1)
-    d2 = (cf - c2)
+        cf = faces.centre[fID]
+        c1 = cells.centre[owner1]
+        c2 = cells.centre[owner2]
+        d1 = (cf - c1)
+        d2 = (cf - c2)
 
-    F1 = F[owner1]
-    F2 = F[owner2]
-    grad1 = ∇F[owner1]
-    grad2 = ∇F[owner2]
+        F1 = F[owner1]
+        F2 = F[owner2]
+        grad1 = ∇F[owner1]
+        grad2 = ∇F[owner2]
 
-    minF = min(F1, F2)
-    maxF = max(F1, F2)
-    deltaF = (maxF - minF)
-    minF -= deltaF
-    maxF += deltaF
+        minF = min(F1, F2)
+        maxF = max(F1, F2)
+        deltaF = (maxF - minF)
+        minF -= deltaF
+        maxF += deltaF
 
-    F1_ext = grad1⋅d1
-    F2_ext = grad2⋅d2
+        F1_ext = grad1⋅d1
+        F2_ext = grad2⋅d2
 
-    set_limiter(limiter, owner1, maxF, minF, F1_ext, F1, F2)
-    set_limiter(limiter, owner2, maxF, minF, F2_ext, F2, F1)
+        set_limiter(limiter, owner1, maxF, minF, F1_ext, F1)
+        set_limiter(limiter, owner2, maxF, minF, F2_ext, F2)
+    end
 end
 
+# Vector kernel follows OpenFOAM faceLimitedGrad<vector>: the gradient tensor extrapolated to the face centre (tensor*d) sets a direction,
+# both cells' values are projected onto it (dot products), and bounds and limiter ratios are computed in that scalar space
+# using magSqr(gradf).
 @kernel function _limit_gradient!(::FaceBased, limiter, ∇F, F::Field, cells, faces, nbfaces
     ) where {Field<:AbstractVectorField}
     i = @index(Global)
     fID = i + nbfaces
 
-    face = faces[fID]
-    ownerCells = face.ownerCells
-    owner1 = ownerCells[1]
-    owner2 = ownerCells[2]
-    cell1 = cells[owner1]
-    cell2 = cells[owner2]
+    @inbounds begin
+        ownerCells = faces.ownerCells[fID]
+        own = ownerCells[1]
+        nei = ownerCells[2]
 
-    n = face.normal
-    cf = face.centre 
-    c1 = cell1.centre
-    c2 = cell2.centre
-    d1 = (cf - c1)
-    d2 = (cf - c2)
-    grad1 = ∇F[owner1]
-    grad2 = ∇F[owner2]
+        cf = faces.centre[fID]
+        cOwn = cells.centre[own]
+        cNei = cells.centre[nei]
 
-    gradf = grad1*d1
-    F1 = gradf⋅F[owner1]
-    F2 = gradf⋅F[owner2]
+        gradOwn = ∇F[own]   # SMatrix{3,3} — gradient tensor
+        gradNei = ∇F[nei]
+        fOwn = F[own]        # SVector{3} — field value
+        fNei = F[nei]
 
-    minF = min(F1, F2)
-    maxF = max(F1, F2)
-    deltaF = (maxF - minF)
-    minF -= deltaF
-    maxF += deltaF
+        # --- Owner side ---
+        # Extrapolate owner gradient to face centre (tensor × vector → vector)
+        gradf = gradOwn * (cf - cOwn)
+        # Project both field values onto extrapolation direction (vector ⋅ vector → scalar)
+        vsfOwn = gradf ⋅ fOwn
+        vsfNei = gradf ⋅ fNei
+        # Relaxed bounds in projected space
+        maxFace = max(vsfOwn, vsfNei)
+        minFace = min(vsfOwn, vsfNei)
+        deltaF = maxFace - minFace
+        maxFace += deltaF
+        minFace -= deltaF
+        # Limit using magSqr(gradf) as the extrapolation measure
+        set_limiter(limiter, own, maxFace, minFace, gradf ⋅ gradf, vsfOwn)
 
-    F1_ext = gradf⋅gradf
-    set_limiter(limiter, owner1, maxF, minF, F1_ext, F1, F2)
-    
-    gradf = grad2*d2
-    F1 = gradf⋅F[owner1]
-    F2 = gradf⋅F[owner2]
-
-    minF = min(F1, F2)
-    maxF = max(F1, F2)
-    deltaF = (maxF - minF)
-    minF -= deltaF
-    maxF += deltaF
-    
-    F2_ext = gradf⋅gradf
-
-    set_limiter(limiter, owner2, maxF, minF, F2_ext, F2, F1)
+        # --- Neighbour side ---
+        gradf = gradNei * (cf - cNei)
+        vsfOwn = gradf ⋅ fOwn
+        vsfNei = gradf ⋅ fNei
+        maxFace = max(vsfOwn, vsfNei)
+        minFace = min(vsfOwn, vsfNei)
+        deltaF = maxFace - minFace
+        maxFace += deltaF
+        minFace -= deltaF
+        set_limiter(limiter, nei, maxFace, minFace, gradf ⋅ gradf, vsfNei)
+    end
 end
 
-function set_limiter(limiter, cID, Fmax, Fmin, δF, F, FN)
+function atomic_min!(limiter, i, val)
+    old = limiter[i]
+    while val < old
+        old, success = Atomix.@atomicreplace limiter[i] old => val
+        !success || break
+    end
+    return nothing
+end
+
+function set_limiter(limiter, cID, Fmax, Fmin, δF, F)
     δmax = Fmax - F
     δmin = Fmin - F
     if δF > δmax
-        limiter[cID] = min(limiter[cID], δmax/δF)
+        atomic_min!(limiter, cID, δmax/δF)
     elseif δF < δmin
-        limiter[cID] = min(limiter[cID], δmin/δF)
+        atomic_min!(limiter, cID, δmin/δF)
     end
-end  
+end

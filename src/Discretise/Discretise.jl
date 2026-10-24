@@ -14,6 +14,7 @@ using SparseMatricesCSR
 using Statistics
 
 using XCALibre.Multithread
+using XCALibre.Multithread: _sized
 using XCALibre.Mesh
 using XCALibre.Fields
 using XCALibre.ModelFramework
@@ -23,6 +24,7 @@ using XCALibre.ModelFramework
 include("Discretise_0_types.jl")
 include("Discretise_1_schemes.jl")
 include("Discretise_2_generated_distretisation.jl")
+include("Discretise_6_time_levels.jl")
 include("Discretise_3_boundary_conditions.jl")
 include("Discretise_4_assign_boundaries.jl")
 include("Discretise_5_apply_bcs.jl")
@@ -36,12 +38,16 @@ include("boundary_conditions/dirichletFunction.jl")
 include("boundary_conditions/dirichletFunction_interpolation.jl")
 include("boundary_conditions/fixedTemperature.jl")
 include("boundary_conditions/fixedTemperature_interpolation.jl")
+include("boundary_conditions/fixedHeatFlux.jl")
+include("boundary_conditions/fixedHeatFlux_interpolation.jl")
 include("boundary_conditions/empty.jl")
 include("boundary_conditions/empty_interpolation.jl")
 include("boundary_conditions/neumann.jl")
 include("boundary_conditions/extrapolated.jl")
 include("boundary_conditions/zerogradient.jl")
 include("boundary_conditions/zerogradient_interpolation.jl")
+include("boundary_conditions/outlet.jl")
+include("boundary_conditions/outlet_interpolation.jl")
 include("boundary_conditions/neumannFunction.jl")
 include("boundary_conditions/neumannFunction_interpolation.jl")
 include("boundary_conditions/neumann_interpolation.jl")
@@ -53,6 +59,9 @@ include("boundary_conditions/wall.jl")
 include("boundary_conditions/wall_interpolation.jl")
 include("boundary_conditions/rotating_wall.jl")
 include("boundary_conditions/rotating_wall_interpolation.jl")
-
+include("boundary_conditions/slip.jl")
+include("boundary_conditions/slip_interpolation.jl")
+include("boundary_conditions/robin.jl")
+include("boundary_conditions/robin_interpolation.jl")
 
 end

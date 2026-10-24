@@ -1,4 +1,4 @@
-using Plots
+# using Plots
 using XCALibre
 # using CUDA # Run this if using NVIDIA GPU
 # using AMDGPU # Run this if using AMD GPU
@@ -28,10 +28,14 @@ temp = 300.0
 pressure = 100000
 Pr = 0.7
 
+mu_ref = 1.8e-5
+T_ref = 288.15
+S = 110.4
+
 model = Physics(
     time = Steady(),
     fluid = Fluid{WeaklyCompressible}(
-        nu = nu,
+        nu = Viscosity{SutherlandViscosity}(mu_ref=mu_ref, T_ref=T_ref, S=S),
         cp = cp,
         gamma = gamma,
         Pr = Pr
@@ -58,7 +62,7 @@ BCs = assign(
             Zerogradient(:bottom),
             Zerogradient(:top)
         ],
-        h = [
+        he = [
             FixedTemperature(:inlet, T=300.0, Enthalpy(cp=cp, Tref=288.15)),
             Zerogradient(:outlet),
             FixedTemperature(:cylinder, T=330.0, Enthalpy(cp=cp, Tref=288.15)),
@@ -83,7 +87,7 @@ solvers = (
         relax       = 0.2,
         rtol = 1e-2
     ),
-    h = SolverSetup(
+    he = SolverSetup(
         solver      = Bicgstab(), # Bicgstab(), Gmres()
         preconditioner = Jacobi(),
         convergence = 1e-7,
@@ -95,7 +99,7 @@ solvers = (
 schemes = (
     U = Schemes(divergence=LUST, gradient=Gauss),
     p = Schemes(divergence=LUST, gradient=Gauss),
-    h = Schemes(divergence=LUST, gradient=Gauss)
+    he = Schemes(divergence=LUST, gradient=Gauss)
 )
 
 runtime = Runtime(iterations=500, write_interval=100, time_step=1)
@@ -112,9 +116,3 @@ initialise!(model.energy.T, temp)
 println("Maxh ", maximum(model.energy.T.values), " minh ", minimum(model.energy.T.values))
 
 residuals = run!(model, config, ncorrectors=2); #, pref=0.0)
-
-# plot(; xlims=(0,runtime.iterations), ylims=(1e-8,0))
-# plot!(1:length(Rx), Rx, yscale=:log10, label="Ux")
-# plot!(1:length(Ry), Ry, yscale=:log10, label="Uy")
-# plot!(1:length(Rp), Rp, yscale=:log10, label="p")
-# plot!(1:length(Rh), Rh, yscale=:log10, label="h")

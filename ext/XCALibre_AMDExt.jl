@@ -19,6 +19,25 @@ function XCALibre.Mesh._convert_array!(arr, backend::BACKEND)
     return adapt(GPUARRAY, arr) # using GPUARRAY
 end
 
+# NEW SECTION: distributed meshes (mirrors XCALibre_CUDAExt; NOT lab-verified, no AMD hardware)
+
+import XCALibre.Distribute
+import XCALibre.Distribute: DistributedMesh
+
+# kernels get the wrapped device mesh: host partition/procs metadata is not isbits and
+# no kernel reads it (HaloExchange/PETSc hold their own device copies)
+Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, dm::DistributedMesh) =
+    Adapt.adapt(to, getfield(dm, :mesh))
+
+Distribute.bind_device!(::BACKEND, rank::Integer) =
+    (AMDGPU.device_id!(rank % length(AMDGPU.devices()) + 1); nothing) # device_id! is 1-based
+Distribute.ndevices(::BACKEND) = length(AMDGPU.devices())
+
+# PETSc.jl has no HIP memory backend, so a device Vec cannot be handed back as a ROCArray
+Distribute.petsc_device_info(::ROCArray) = error("PETScSolver: distributed solves on AMD GPUs " *
+    "are not supported, because PETSc.jl cannot expose PETSc's HIP vectors as device arrays. " *
+    "Run on the CPU backend or on a CUDA GPU with a CUDA-enabled PETSc.")
+
 import XCALibre.ModelFramework: _nzval, _rowptr, _colval, get_sparse_fields, 
                                 _build_A, _build_opA
 
@@ -27,10 +46,13 @@ _build_A(backend::BACKEND, i, j, v, n) = begin
     SPARSEGPU(A)
 end
 
-_build_opA(A::SPARSEGPU) = KP.KrylovOperator(A)
+_build_opA(A::SPARSEGPU) = A # opA field is never read; skip the unused KrylovOperator
 @inline _nzval(A::SPARSEGPU) = A.nzVal
 @inline _rowptr(A::SPARSEGPU) = A.rowPtr
 @inline _colval(A::SPARSEGPU) = A.colVal
+@inline XCALibre.Solve._nzval(A::SPARSEGPU) = A.nzVal
+@inline XCALibre.Solve._rowptr(A::SPARSEGPU) = A.rowPtr
+@inline XCALibre.Solve._colval(A::SPARSEGPU) = A.colVal
 @inline get_sparse_fields(A::SPARSEGPU) = begin
     A.nzVal, A.colVal, A.rowPtr
 end
@@ -67,7 +89,7 @@ end
 update_preconditioner!(P::Preconditioner{DILU,M,PT,S},  mesh, config) where {M<:SPARSEGPU,PT,S} =
 begin
     KernelAbstractions.copyto!(CPU(), P.storage.A.nzval, P.A.nzVal)
-    update_dilu_diagonal!(P, mesh, config)
+    XCALibre.Solve.update_dilu_diagonal!(P, mesh, config)
     nothing
 end
 
@@ -156,5 +178,4 @@ begin
 end
 
 end # end module
-
 

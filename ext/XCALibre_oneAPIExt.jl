@@ -28,10 +28,13 @@ _build_A(backend::BACKEND, i, j, v, n) = begin
     SPARSEGPU(A)
 end
 
-_build_opA(A::SPARSEGPU) = KP.KrylovOperator(A)
+_build_opA(A::SPARSEGPU) = A # opA field is never read; skip the unused KrylovOperator
 @inline _nzval(A::SPARSEGPU) = A.nzVal
 @inline _rowptr(A::SPARSEGPU) = A.rowPtr
 @inline _colval(A::SPARSEGPU) = A.colVal
+@inline XCALibre.Solve._nzval(A::SPARSEGPU) = A.nzVal
+@inline XCALibre.Solve._rowptr(A::SPARSEGPU) = A.rowPtr
+@inline XCALibre.Solve._colval(A::SPARSEGPU) = A.colVal
 @inline get_sparse_fields(A::SPARSEGPU) = begin
     A.nzVal, A.colVal, A.rowPtr
 end
@@ -68,7 +71,7 @@ end
 update_preconditioner!(P::Preconditioner{DILU,M,PT,S},  mesh, config) where {M<:SPARSEGPU,PT,S} =
 begin
     KernelAbstractions.copyto!(CPU(), P.storage.A.nzval, P.A.nzVal)
-    update_dilu_diagonal!(P, mesh, config)
+    XCALibre.Solve.update_dilu_diagonal!(P, mesh, config)
     nothing
 end
 
@@ -103,5 +106,4 @@ begin
 end
 
 end # end module
-
 

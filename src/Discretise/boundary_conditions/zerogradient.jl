@@ -24,14 +24,6 @@ Zerogradient(name::Symbol) = Zerogradient(name , 0)
 
 @define_boundary Zerogradient Laplacian{Linear} begin
     # For now this is hard-coded as zero-gradient. To-do extension to any input gradient
-    # phi = term.phi 
-    # values = get_values(phi, component)
-    # J = term.flux[fID]
-    # (; area, delta) = face 
-    # # flux = -J*area/delta
-    # flux = -J*area # /delta
-    # ap = term.sign*(flux)
-    # # ap, ap*values[cellID] # original
     0.0, 0.0 # try this
 end
 
@@ -65,10 +57,9 @@ end
     # 0.0, -ap*values[cellID] # try this
 end
 
+# Bounded: upwind (ap,0) minus ap on diagonal -> (0,0)
 @define_boundary Zerogradient Divergence{BoundedUpwind} begin
-    flux = term.flux[fID]
-    ap = term.sign*(flux)
-    ap-flux, 0.0
+    0.0, 0.0
 end
 
 @define_boundary Zerogradient Si begin

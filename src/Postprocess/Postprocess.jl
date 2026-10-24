@@ -4,6 +4,8 @@ using StaticArrays
 
 using LinearAlgebra
 using SparseMatricesCSR
+using GPUArrays
+using KernelAbstractions
 # using ThreadedSparseCSR
 
 using Adapt
@@ -14,11 +16,13 @@ using XCALibre.Calculate
 using XCALibre.Discretise
 using XCALibre.ModelPhysics
 using XCALibre.Solve
+import XCALibre.Calculate: _boundary_sngrad
 # using XCALibre.Turbulence
 
 include("Postprocess_functions.jl")
 include("Postprocess_0_field_average.jl")
 include("Postprocess_1_field_rms.jl")
 include("Postprocess_2_reynolds_stress_tensor.jl")
-
+include("Postprocess_3_Q-criterion.jl")
+include("Postprocess_4_probe.jl")
 end

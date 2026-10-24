@@ -21,6 +21,11 @@ function Adapt.adapt_structure(to, itp::Grad{S}) where {S}
     Grad{S,F,R,I,M}(field, result, correctors, correct, mesh)
 end
 
+# `correctors` holds the mesh-only data a scheme needs: nothing for Gauss and Midpoint, the
+# inverse normal matrices for the least-squares schemes (built in Calculate_1_least_squares.jl)
+_grad_correctors(::Type{S}, mesh) where S = one(_get_int(mesh))
+_grad_correctors(::Type{LeastSquares}, mesh) = _lsq_geometry(mesh)
+
 # Grad outer constructor for scalar field definition
 Grad{S}(phi::ScalarField) where S= begin
     # Retrieve mesh and define grad as vector field
@@ -30,11 +35,12 @@ Grad{S}(phi::ScalarField) where S= begin
     # Retrieve user-selected types
     F = typeof(phi)
     R = typeof(grad)
-    I = _get_int(mesh)
+    correctors = _grad_correctors(S, mesh)
+    I = typeof(correctors)
     M = typeof(mesh)
 
     # Construct Grad
-    Grad{S,F,R,I,M}(phi, grad, one(I), false, mesh)
+    Grad{S,F,R,I,M}(phi, grad, correctors, false, mesh)
 end
 
 # Grad outer constructor for vector field definition
@@ -46,11 +52,29 @@ Grad{S}(psi::VectorField) where S = begin
     # Retrieve user-selected types
     F = typeof(psi)
     R = typeof(tgrad)
-    I = _get_int(mesh)
+    correctors = _grad_correctors(S, mesh)
+    I = typeof(correctors)
     M = typeof(mesh)
 
     # Construct Grad
-    Grad{S,F,R,I,M}(psi, tgrad, one(I), false, mesh)
+    Grad{S,F,R,I,M}(psi, tgrad, correctors, false, mesh)
+end
+
+# Grad outer constructor for face scalar field definition
+Grad{S}(phi::FaceScalarField) where S= begin
+    # Retrieve mesh and define grad as vector field
+    mesh = phi.mesh
+    grad = VectorField(mesh)
+
+    # Retrieve user-selected types
+    F = typeof(phi)
+    R = typeof(grad)
+    correctors = _grad_correctors(S, mesh)
+    I = typeof(correctors)
+    M = typeof(mesh)
+
+    # Construct Grad
+    Grad{S,F,R,I,M}(phi, grad, correctors, false, mesh)
 end
 
 Base.getindex(grad::Grad{S,F,R,I,M}, i::Integer) where {S,F,R<:VectorField,I,M} = begin
@@ -84,12 +108,14 @@ end
 
 # GRADIENT CALCULATION FUNCTIONS
 
+
 ## Gauss (uncorrected) gradient calculation
 
 function grad!(grad::Grad{Gauss,F,R,I,M}, phif, phi, BCs, time, config) where {F,R<:VectorField,I,M}
     interpolate!(phif, phi, config)
     correct_boundaries!(phif, phi, BCs, time, config)
     green_gauss!(grad, phif, config)
+    sync!(grad.result, grad.result.mesh, config) # self-syncing seam (no-op serial)
 end
 
 # Tensor field function definition
@@ -113,7 +139,7 @@ function interpolate_midpoint!(phif::FaceScalarField, phi::ScalarField, config)
 
     # Launch interpolate midpoint kernel for scalar field
     ndrange = length(faces)
-    kernel! = interpolate_midpoint_scalar!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(interpolate_midpoint_scalar!, backend, workgroup, ndrange)
     kernel!(faces, phif, phi)
     # # KernelAbstractions.synchronize(backend)
 end
@@ -126,12 +152,14 @@ end
 
     @inbounds begin
         # Extract required fields from work item face and define ownerCell variables
-        (; ownerCells) = faces[i]
+        ownerCells = faces.ownerCells[i]
         c1 = ownerCells[1]
         c2 = ownerCells[2]
 
         # Interpolate calculation
-        phif[i] = 0.5*(phi[c1] + phi[c2])
+        phi1 = phi[c1]
+        half = typeof(phi1)(0.5)
+        phif[i] = half*(phi1 + phi[c2])
     end
 end
 
@@ -146,7 +174,7 @@ function interpolate_midpoint!(phif::FaceVectorField, phi::VectorField, config)
 
     # Launch interpolate midpoint kernel for scalar field
     ndrange = length(faces)
-    kernel! = interpolate_midpoint_vector!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(interpolate_midpoint_vector!, backend, workgroup, ndrange)
     kernel!(faces, phif, phi)
     # # KernelAbstractions.synchronize(backend)
 end
@@ -158,18 +186,17 @@ end
     @uniform begin
         # Extract individual value vectors from vector field
         (; x, y, z) = psif
-        weight = 0.5
     end
 
     @inbounds begin
         # Retrieve face, weight and ownerCells for loop iteration
-        face = faces[fID]
-        ownerCells = face.ownerCells
+        ownerCells = faces.ownerCells[fID]
         c1 = ownerCells[1]; c2 = ownerCells[2]
         
         # Set values to interpolate between
         psi1 = psi[c1]
         psi2 = psi[c2]
+        weight = typeof(psi1[1])(0.5)
         midpoint = weight*(psi1 + psi2)
 
         # Interpolate calculation
@@ -189,35 +216,32 @@ function correct_interpolation!(grad, phif, phi, config)
     (; hardware) = config
     (; backend, workgroup) = hardware
 
-    # Retrieve user-selected float type
-    F = _get_float(mesh)
-    
-    # Set initial weight
-    weight = 0.5
+    # Set initial weight using the field storage type.
+    weight = eltype(phif)(0.5)
 
     # Launch correct interpolation kernel
     ndrange = length(faces) - nbfaces
-    kernel! = correct_interpolation_kernel!(_setup(backend, workgroup, ndrange)...)
-    kernel!(faces, cells, nbfaces, phi, F, weight, grad, phif)
+    kernel! = _sized(correct_interpolation_kernel!, backend, workgroup, ndrange)
+    kernel!(faces, cells, nbfaces, phi, weight, grad, phif)
     # # KernelAbstractions.synchronize(backend)
 end
 
 # Correct interpolation kernel definition
 
-@kernel inbounds=true function correct_interpolation_kernel!(faces, cells, nbfaces, phi, F, weight, grad, phif::Field) where {Field}
+@kernel inbounds=true function correct_interpolation_kernel!(faces, cells, nbfaces, phi, weight, grad, phif::Field) where {Field}
     i = @index(Global)
     i += nbfaces # Set i such that it does not index boundary faces
 
     # Retrieve fields from work item face
-    (; ownerCells, centre) = faces[i]
+    ownerCells, centre = faces.ownerCells[i], faces.centre[i]
     centre_face = centre
     owner1 = ownerCells[1]
     owner2 = ownerCells[2]
 
     # Retrieve centre from work item cells and redefine variable name 
-    (; centre) = cells[owner1]
+    centre = cells.centre[owner1]
     centre_cell1 = centre
-    (; centre) = cells[owner2]
+    centre = cells.centre[owner2]
     centre_cell2 = centre
 
     # Retrieve values between which to correct interpolation
@@ -260,4 +284,31 @@ end
 # This is a gradient method that does not take BCs as arguments (implicitly assuming the the gradient at boundaries is 0)
 function grad!(grad::Grad{Gauss,F,R,I,M}, phif, phi, time, config) where {F,R<:VectorField,I,M}
     green_gauss!(grad, phif, config)
+    sync!(grad.result, grad.result.mesh, config) # self-syncing seam (no-op serial)
+end
+
+function grad!(grad::Grad{Gauss,F,R,I,M}, phif, config) where {F,R<:VectorField,I,M}
+    green_gauss!(grad, phif, config)
+end
+
+function grad!(grad::Grad{Gauss,F,R,I,M}, psif, psi, time, config) where {F,R<:TensorField,I,M}
+    green_gauss!(grad, psif, config)
+end
+
+## Least-squares gradients (LeastSquares). See Calculate_1_least_squares.jl
+
+function grad!(grad::Grad{LeastSquares,F,R,I,M}, phif, phi, BCs, time, config) where {F,R,I,M}
+    interpolate!(phif, phi, config)
+    correct_boundaries!(phif, phi, BCs, time, config)
+    _lsq_empty_faces!(phif, phi, BCs, config)
+    least_squares!(grad, phif, phi, config)
+end
+
+# Without BCs: boundary faces use the values already stored in the face field
+function grad!(grad::Grad{LeastSquares,F,R,I,M}, phif, phi, time, config) where {F,R,I,M}
+    least_squares!(grad, phif, phi, config)
+end
+
+function grad!(grad::Grad{LeastSquares,F,R,I,M}, phif, config) where {F,R,I,M}
+    error("grad!: LeastSquares needs the cell field, use grad!(grad, phif, phi, time, config)")
 end

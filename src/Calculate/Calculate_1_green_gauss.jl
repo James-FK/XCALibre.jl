@@ -10,15 +10,13 @@ function green_gauss!(grad::Grad{S,F,R,I,M}, phif, config) where {S,F,R<:VectorF
     
     # Launch result calculation kernel
     ndrange = length(x)
-    kernel! = _green_gauss!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(_green_gauss!, backend, workgroup, ndrange)
     kernel!(x, y, z, phif)
     # # KernelAbstractions.synchronize(backend)
 
-    # number of boundary faces
-    nbfaces = length(phif.mesh.boundary_cellsID)
-    
-    ndrange = nbfaces
-    kernel! = boundary_faces_contribution!(_setup(backend, workgroup, ndrange)...)
+    # boundary faces, one work item per boundary cell (fixed summation order)
+    ndrange = length(phif.mesh.boundary_cells)
+    kernel! = _sized(boundary_faces_contribution!, backend, workgroup, ndrange)
     kernel!(x, y, z, phif)
     # # KernelAbstractions.synchronize(backend)
 end
@@ -33,14 +31,15 @@ end
     end
      
     @inbounds begin
-        (; volume, faces_range) = cells[i]
+        volume, faces_range = cells.volume[i], cells.faces_range[i]
 
-        res = SVector{3}(0.0,0.0,0.0)
+        z = zero(volume)
+        res = SVector{3}(z,z,z)
 
         for fi ∈ faces_range
             fID = cell_faces[fi]
             nsign = cell_nsign[fi]
-            (; area, normal) = faces[fID]
+            area, normal = faces.area[fID], faces.normal[fID]
             
             res += values[fID]*(area*normal*nsign)
         end
@@ -52,27 +51,31 @@ end
     end    
 end
 
-# Boundary faces contribution kernel definition
+# Boundary faces contribution kernel definition: one work item per boundary cell adds its faces in
+# face order (no atomics), so the result does not depend on the thread count
 
 @kernel function boundary_faces_contribution!(dx, dy, dz, phif)
-    i = @index(Global)
+    j = @index(Global)
 
     @uniform begin
         (; mesh, values) = phif
-        (; faces, cells) = mesh
+        (; faces, cells, boundary_cells, boundary_cell_faces_range, boundary_cell_faces) = mesh
     end
 
     @inbounds begin
-        (; ownerCells, area, normal) = faces[i]
-        cID = ownerCells[1]
-        (; volume) = cells[cID]
+        cID = boundary_cells[j]
+        volume = cells.volume[cID]
+        for k ∈ boundary_cell_faces_range[j]
+            i = boundary_cell_faces[k]
+            area, normal = faces.area[i], faces.normal[i]
 
-        res = values[i]*(area*normal)
-        res /= volume 
-        
-        Atomix.@atomic dx.values[cID] += res[1]
-        Atomix.@atomic dy.values[cID] += res[2]
-        Atomix.@atomic dz.values[cID] += res[3]
+            res = values[i]*(area*normal)
+            res /= volume
+
+            dx.values[cID] += res[1]
+            dy.values[cID] += res[2]
+            dz.values[cID] += res[3]
+        end
     end
 end
 
@@ -88,15 +91,13 @@ function green_gauss!(
     
     # Launch result calculation kernel
     ndrange = length(xx)
-    kernel! = _green_gauss_vector!(_setup(backend, workgroup, ndrange)...)
+    kernel! = _sized(_green_gauss_vector!, backend, workgroup, ndrange)
     kernel!(xx, xy, xz, yx, yy, yz, zx, zy, zz, psif)
     # # KernelAbstractions.synchronize(backend)
 
-    # number of boundary faces
-    nbfaces = length(psif.mesh.boundary_cellsID)
-    
-    ndrange = nbfaces
-    kernel! = boundary_faces_contribution_vector!(_setup(backend, workgroup, ndrange)...)
+    # boundary faces, one work item per boundary cell (fixed summation order)
+    ndrange = length(psif.mesh.boundary_cells)
+    kernel! = _sized(boundary_faces_contribution_vector!, backend, workgroup, ndrange)
     kernel!(xx, xy, xz, yx, yy, yz, zx, zy, zz, psif)
     # # KernelAbstractions.synchronize(backend)
 end
@@ -112,14 +113,14 @@ end
     end
      
     @inbounds begin
-        (; volume, faces_range) = cells[i]
+        volume, faces_range = cells.volume[i], cells.faces_range[i]
 
         res = SMatrix{3,3}(z,z,z,z,z,z,z,z,z)
 
         for fi ∈ faces_range
             fID = cell_faces[fi]
             nsign = cell_nsign[fi]
-            (; area, normal) = faces[fID]
+            area, normal = faces.area[fID], faces.normal[fID]
             Sf = area*normal*nsign
             res += psif[fID]*Sf'
         end
@@ -141,32 +142,35 @@ end
 
 @kernel function boundary_faces_contribution_vector!(
     xx, xy, xz, yx, yy, yz, zx, zy, zz, psif)
-    i = @index(Global)
+    j = @index(Global)
 
     @uniform begin
         (; mesh) = psif
-        (; faces, cells) = mesh
+        (; faces, cells, boundary_cells, boundary_cell_faces_range, boundary_cell_faces) = mesh
     end
 
     @inbounds begin
-        (; ownerCells, area, normal) = faces[i]
-        cID = ownerCells[1]
-        (; volume) = cells[cID]
+        cID = boundary_cells[j]
+        volume = cells.volume[cID]
+        for k ∈ boundary_cell_faces_range[j]
+            i = boundary_cell_faces[k]
+            area, normal = faces.area[i], faces.normal[i]
 
-        Sf = area*normal
-        res = psif[i]*Sf'
-        res /= volume 
-        
-        Atomix.@atomic xx.values[cID] += res[1,1]
-        Atomix.@atomic xy.values[cID] += res[1,2]
-        Atomix.@atomic xz.values[cID] += res[1,3]
+            Sf = area*normal
+            res = psif[i]*Sf'
+            res /= volume
 
-        Atomix.@atomic yx.values[cID] += res[2,1]
-        Atomix.@atomic yy.values[cID] += res[2,2]
-        Atomix.@atomic yz.values[cID] += res[2,3]
+            xx.values[cID] += res[1,1]
+            xy.values[cID] += res[1,2]
+            xz.values[cID] += res[1,3]
 
-        Atomix.@atomic zx.values[cID] += res[3,1]
-        Atomix.@atomic zy.values[cID] += res[3,2]
-        Atomix.@atomic zz.values[cID] += res[3,3]
+            yx.values[cID] += res[2,1]
+            yy.values[cID] += res[2,2]
+            yz.values[cID] += res[2,3]
+
+            zx.values[cID] += res[3,1]
+            zy.values[cID] += res[3,2]
+            zz.values[cID] += res[3,3]
+        end
     end
 end

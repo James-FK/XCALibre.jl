@@ -1,9 +1,11 @@
 module IOFormats
 
 using XCALibre.Mesh
+import XCALibre.FoamMesh
 using XCALibre.Fields
 using XCALibre.Discretise
 using KernelAbstractions
+using Adapt
 using LinearAlgebra
 using StaticArrays
 using Printf
