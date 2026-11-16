@@ -77,6 +77,7 @@ const TIERS = [
         "unit/Postprocess/test_field_rms.jl",
         "unit/Postprocess/test_reynolds_stress.jl",
         "unit/Postprocess/test_qcriterion_window.jl",
+        "unit/Postprocess/test_tke_budget.jl",
         "unit/Postprocess/test_post_process_transient.jl",
         "unit/Postprocess/test_post_process_steady.jl",
         "unit/Postprocess/test_viscous_force_bcs.jl",

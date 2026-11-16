@@ -19,6 +19,10 @@ function build_args(pp)
     pp === nothing && return ()
     if hasproperty(pp, :rs)
         return ((getproperty(pp, :name), getproperty(pp, :rs)),)
+    elseif hasproperty(pp, :production) # TKEBudget: one field per budget term
+        terms = (:convection, :production, :diffusion_pressure, :diffusion_turbulent,
+            :diffusion_viscous, :diffusion_SGS, :dissipation, :dissipation_SGS)
+        return Tuple((pp.names[i], getproperty(pp, term)) for (i, term) ∈ enumerate(terms))
     elseif hasproperty(pp, :Q)
         return ((getproperty(pp, :name), getproperty(pp, :Q)),)
     elseif hasproperty(pp, :rms)
@@ -32,5 +36,5 @@ end
 
 function build_args(pp::Vector)
     vector_of_tuples = build_args.(pp)
-    return Tuple(first(t) for t in vector_of_tuples if !isempty(t))
+    return Tuple(Iterators.flatten(vector_of_tuples)) # an entry may write several fields, or none
 end

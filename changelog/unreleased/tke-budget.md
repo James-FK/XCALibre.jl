@@ -1,0 +1,2 @@
+* added: `TKEBudget(model)` runtime post-processing writes the eight terms of the turbulent kinetic energy budget (convection, production, pressure, turbulent, viscous and subgrid scale diffusion, viscous and subgrid scale dissipation) of incompressible flows. It runs on CPU, GPU and distributed meshes.
+* fixed: a `postprocess` vector now writes every field of an entry that provides several fields.

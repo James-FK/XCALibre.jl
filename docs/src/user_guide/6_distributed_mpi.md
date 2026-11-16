@@ -377,7 +377,7 @@ Output on a distributed mesh is written with `output=OpenFOAM()` in the decompos
 no decomposed writer, so a run that asks for VTK output with a positive `write_interval` stops with
 an error at its first write. Leave `write_interval=-1` when no output is needed.
 Runtime post-processing (`postprocess` in the `Configuration`) runs on distributed meshes as in
-serial. `FieldAverage`, `FieldRMS`, `ReynoldsStress` and `Qcriterion` update each rank's own cells,
+serial. `FieldAverage`, `FieldRMS`, `ReynoldsStress`, `Qcriterion` and `TKEBudget` update each rank's own cells,
 and with `output=OpenFOAM()` their fields are written to the processor directories next to `U` and
 `p`. A `Probe` is sampled by the rank that owns the cell nearest to its location (the same cell as
 in serial) and rank 0 writes the probe file. Create it with the distributed mesh,

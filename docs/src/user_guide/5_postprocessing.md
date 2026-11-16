@@ -46,6 +46,17 @@ The Q-criterion can be obtained using the constructor `Qcriterion`, which has to
 ```@docs; canonical=false
 Qcriterion
 ```
+## Example: Calculate the turbulent kinetic energy budget
+The terms of the turbulent kinetic energy (TKE) budget of an incompressible flow can be obtained using the constructor `TKEBudget`, which has to be passed to the `Configuration` object. 
+```@docs; canonical=false
+TKEBudget
+```
+The constructor takes the `Physics` object, since the budget samples the velocity, the pressure and the viscosities of the model.
+```julia
+postprocess = TKEBudget(model; start=10.0)
+config = Configuration(solvers=solvers, schemes=schemes, runtime=runtime, hardware=hardware, boundaries=BCs, postprocess=postprocess)
+```
+Each of the eight terms is written as a scalar field with the other post-processed fields.
 ## Example: Put a probe at a location in the compuational domain and output to file
 To create a probe, before creating the `Configuration` object, create an instance of `Probe`.
 ```@docs; canonical=false

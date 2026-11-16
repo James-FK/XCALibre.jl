@@ -1,5 +1,5 @@
-# Runtime post-processing on a distributed mesh: FieldAverage, FieldRMS, ReynoldsStress, Qcriterion
-# and Probe match a serial run (piso!, simple!, laplace!), probe files are written once by rank 0,
+# Runtime post-processing on a distributed mesh: FieldAverage, FieldRMS, ReynoldsStress, Qcriterion,
+# TKEBudget and Probe match a serial run (piso!, simple!, laplace!), probe files are written once by rank 0,
 # and post-processed fields are written to the processor directories.
 using XCALibre, PETSc, MPI, Test, StaticArrays
 
@@ -79,6 +79,42 @@ if rank == 0
             @test length(d) == length(s) == nsteps # one row per step, written once
             @test first.(d) == first.(s)
             @test maximum(maximum(abs.(d[i][2:end] .- s[i][2:end])) for i ∈ eachindex(s)) < 1e-9
+        end
+    end
+end
+
+# transient piso! with an LES model: every term of the TKE budget, including the subgrid scale
+# ones (their fluxes depend on gradU, whose ghost values are not exchanged)
+tke_bcs(mesh) = assign(region=mesh, (
+    U = [Wall(:inlet, [0.0, 0.0, 0.0]), Wall(:outlet, [0.0, 0.0, 0.0]),
+         Dirichlet(:top, [1.0, 0.0, 0.0]), Wall(:bottom, [0.0, 0.0, 0.0])],
+    p = [Zerogradient(:inlet), Zerogradient(:outlet),
+         Zerogradient(:top), Zerogradient(:bottom)],
+    nut = [Dirichlet(:inlet, 0.0), Dirichlet(:outlet, 0.0),
+         Dirichlet(:top, 0.0), Dirichlet(:bottom, 0.0)]))
+function tke_case(mesh)
+    _, config = incompressible_case(mesh, tke_bcs; iterations=nsteps, time=Transient(),
+        time_step=0.005, rtol=1e-12)
+    model = Physics(time=Transient(), fluid=Fluid{Incompressible}(nu=1e-4),
+        turbulence=LES{WALE}(), energy=Energy{Isothermal}(), domain=mesh)
+    initialise!(model.momentum.U, [0.0, 0.0, 0.0])
+    initialise!(model.momentum.p, 0.0)
+    pp = [FieldAverage(model.momentum.U; name="U_mean"), TKEBudget(model; start=0.01)]
+    fields(pp) = (pp[2].convection, pp[2].production, pp[2].diffusion_pressure,
+        pp[2].diffusion_turbulent, pp[2].diffusion_viscous, pp[2].diffusion_SGS,
+        pp[2].dissipation, pp[2].dissipation_SGS)
+    model, config, pp, fields
+end
+tke_names = ["convection", "production", "diffusion_pressure", "diffusion_turbulent",
+    "diffusion_viscous", "diffusion_SGS", "dissipation", "dissipation_SGS"]
+dm, ser, dis, files = compare(tke_case, cavity_mesh, tke_names, String[]; run_kw=(; pref=0.0))
+if rank == 0
+    @testset "piso! TKE budget vs serial" begin
+        for n ∈ tke_names
+            e = relerr(dis[n], ser[n])
+            println("tke $n: $e")
+            @test maximum(abs, ser[n]) > 0 # non-vacuous
+            @test e < 1e-6
         end
     end
 end
