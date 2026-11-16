@@ -18,6 +18,7 @@ using XCALibre.ModelPhysics
 using XCALibre.Solve
 import XCALibre.Calculate: _boundary_sngrad, _patch_gradient
 import XCALibre.Fields: field_values
+import XCALibre.IOFormats: build_args
 # using XCALibre.Turbulence
 
 include("Postprocess_functions.jl")
@@ -26,4 +27,5 @@ include("Postprocess_1_field_rms.jl")
 include("Postprocess_2_reynolds_stress_tensor.jl")
 include("Postprocess_3_Q-criterion.jl")
 include("Postprocess_4_probe.jl")
+include("Postprocess_5_field_modes.jl")
 end

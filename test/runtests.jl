@@ -81,6 +81,7 @@ const TIERS = [
         "unit/Postprocess/test_post_process_steady.jl",
         "unit/Postprocess/test_viscous_force_bcs.jl",
         "unit/Postprocess/test_probe.jl",
+        "unit/Postprocess/test_field_modes.jl",
     ],
     "cases" => [
         "cases/test_2d_laplace_steady.jl",

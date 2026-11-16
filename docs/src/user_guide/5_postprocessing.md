@@ -59,6 +59,37 @@ config = Configuration(solvers=solvers, schemes=schemes, runtime=runtime, hardwa
 On a distributed mesh pass the distributed mesh and create the probe on every rank; the rank that
 owns the nearest cell samples it and rank 0 writes the file.
 
+### Example: Extract the modes of a periodic flow
+
+For a flow that is periodic in time, such as a forced boundary layer, `FieldModes` accumulates the Fourier coefficients of a field in every cell, at multiples of a base frequency.
+```@docs; canonical=false
+FieldModes
+```
+For example, for a boundary layer forced at the frequency `f` whose subharmonic `f/2` is also of interest, the base frequency is `f/2`, and the multiples 1 to 5 are `f/2`, `f`, `3f/2`, `2f` and `5f/2`:
+```julia
+modes = FieldModes(model.momentum.U; name="U_modes", frequency=f/2, modes=1:5, start=t_developed)
+config = Configuration(solvers=solvers, schemes=schemes, runtime=runtime, hardware=hardware, boundaries=BCs, postprocess=modes)
+```
+The mean, the real and imaginary parts of each coefficient and the amplitude of each mode are written with the other post-processed fields. After the run, the amplitude and the wave of any mode are available in every cell:
+```@docs; canonical=false
+mode_amplitude
+reconstruct_modes
+```
+```julia
+A_f = mode_amplitude(modes, 2; rms=true)         # rms amplitude of the fundamental, a VectorField
+wave = reconstruct_modes(modes, time; modes=[1]) # the subharmonic wave at one time
+```
+On a mesh extruded along the span, the coefficients can be split further into spanwise wavenumbers, giving the modes `(m, n)`, of frequency `m` times the base frequency and spanwise wavenumber `n` times a base wavenumber:
+```@docs; canonical=false
+spanwise_modes
+```
+```julia
+# the 2D fundamental, the two oblique subharmonic waves and the steady streaks of the same wavenumber
+spanwise = spanwise_modes(modes, mesh; wavenumber=β, modes=[(2, 0), (1, 1), (1, -1), (0, 1)])
+A_11 = mode_amplitude(spanwise, (1, 1))
+oblique = reconstruct_modes(spanwise, time; modes=[(1, 1), (1, -1)]) # the standing pattern of the pair
+```
+
 ### Example: Post-process multiple fields 
 To post-process multiple fields as a time, a vector of objects can be passed instead e.g. 
 ```julia

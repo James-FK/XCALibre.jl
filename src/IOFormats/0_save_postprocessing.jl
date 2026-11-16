@@ -1,4 +1,4 @@
-export save_postprocessing
+export save_postprocessing, build_args
 
 function save_postprocessing(postprocess, iteration, time, mesh, meshData, BCs)
     postprocess === nothing && return nothing
@@ -32,5 +32,5 @@ end
 
 function build_args(pp::Vector)
     vector_of_tuples = build_args.(pp)
-    return Tuple(first(t) for t in vector_of_tuples if !isempty(t))
+    return Tuple(arg for t in vector_of_tuples for arg in t) # an object may write several fields
 end

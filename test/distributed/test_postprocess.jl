@@ -58,13 +58,16 @@ function piso_case(mesh)
     pp = [FieldAverage(U; name="U_mean"), FieldRMS(U; name="U_rms"),
           FieldAverage(p; name="p_mean"), FieldRMS(p; name="p_rms"), rs, Qcriterion(U),
           Probe(U, mesh; location=[0.021, 0.013, 0.0], name="probe_U"),
-          Probe(p, mesh; location=[0.005, 0.034, 0.0], name="probe_p")]
+          Probe(p, mesh; location=[0.005, 0.034, 0.0], name="probe_p"),
+          FieldModes(U; name="U_modes", frequency=20, modes=1:2)] # two periods of 10 steps
     fields(pp) = (pp[1].mean.x, pp[1].mean.y, pp[2].rms.x, pp[2].rms.y, pp[3].mean, pp[4].rms,
-                  pp[5].rs.xx, pp[5].rs.xy, pp[5].rs.yy, pp[6].Q)
+                  pp[5].rs.xx, pp[5].rs.xy, pp[5].rs.yy, pp[6].Q,
+                  pp[9].mean.x, pp[9].re[1].x, pp[9].im[1].y, pp[9].re[2].y, pp[9].im[2].x)
     model, config, pp, fields
 end
 piso_names = ["U_mean.x", "U_mean.y", "U_rms.x", "U_rms.y", "p_mean", "p_rms",
-              "R.xx", "R.xy", "R.yy", "Q"]
+              "R.xx", "R.xy", "R.yy", "Q",
+              "modes.mean.x", "modes.re1.x", "modes.im1.y", "modes.re2.y", "modes.im2.x"]
 dm, ser, dis, files = compare(piso_case, cavity_mesh, piso_names, ["probe_U", "probe_p"])
 
 if rank == 0
@@ -129,6 +132,41 @@ end
     @test isfile(f)
     vals = XCALibre.Distribute._read_foam_lists(f, Float64)[1]
     @test length(vals) == dm.partition.n_owned
+end
+
+# FieldModes split into spanwise wavenumbers: the spanwise lines of cells cross the partition. A field
+# of known waves is stepped by hand on every rank.
+span_mesh = rank == 0 ? UNV3D_mesh(joinpath(pkgdir(XCALibre, "examples/0_GRIDS"), "box32x32x32.unv")) : nothing
+span = MPI.bcast(rank == 0 ? (z = [c.centre[3] for c ∈ span_mesh.cells]; (maximum(z) - minimum(z))*32/31) : nothing, comm; root=0)
+dm3 = distribute(span_mesh; comm)
+let
+    model = Physics(time=Transient(), fluid=Fluid{Incompressible}(nu=1e-3), turbulence=RANS{Laminar}(),
+        energy=Energy{Isothermal}(), domain=dm3)
+    p = model.momentum.p
+    x, y, z = ([dm3.cells[i].centre[k] for i ∈ eachindex(p.values)] for k ∈ 1:3) # ghosts included
+    β, frequency = 2π/span, 2.0
+    ω = 2π*frequency
+    profile = @. (1 + x)*(2 + y^2)
+    waves = Dict((2, 0) => (0.5, 0.3), (1, 1) => (0.2, 1.1), (1, -1) => (0.1, -0.4))
+    u(t) = profile .* (1 .+ sum(A .* cos.(n*β .* z .- m*ω*t .- φ) for ((m, n), (A, φ)) ∈ waves))
+    iterations, dt = 32, 1/(frequency*32)
+    fm = FieldModes(p; name="p_modes", frequency=frequency, modes=1:2)
+    stepping = convert_time_to_iterations(fm, model, dt, iterations)
+    for iter ∈ 1:iterations
+        p.values .= u(iter*dt)
+        runtime_postprocessing!(stepping, iter, iterations, nothing, iter*dt, nothing)
+    end
+    sm = spanwise_modes(fm, dm3; wavenumber=β, modes=[(0, 0); collect(keys(waves)); (2, 1)])
+    owned = 1:dm3.partition.n_owned
+    @testset "spanwise modes across the partition (rank $rank)" begin
+        for ((m, n), (A, φ)) ∈ waves
+            j = findfirst(==((m, n)), sm.modes)
+            @test sm.re[j].values[owned] ≈ (profile .* (A/2*cos(φ)))[owned] rtol = 1e-10
+            @test sm.im[j].values[owned] ≈ (profile .* (-A/2*sin(φ)))[owned] rtol = 1e-10
+        end
+        @test maximum(abs, mode_amplitude(sm, (2, 1)).values[owned]; init=0.0) < 1e-10*maximum(profile)
+        @test reconstruct_modes(sm, 0.123).values ≈ u(0.123) rtol = 1e-10 # ghost cells too
+    end
 end
 
 # rank 0 removes its temporary directory at exit: wait until every rank has read its files
